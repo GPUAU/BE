@@ -2,6 +2,9 @@ package com.gpumarket.domain.market.service;
 
 import com.gpumarket.domain.exchange.dto.LatestExchangeRateResponseDto;
 import com.gpumarket.domain.exchange.service.ExchangeService;
+import com.gpumarket.domain.market.dto.ContractComparisonResponseDto;
+import com.gpumarket.domain.market.dto.ContractComparisonResponseDto.ContractOfferDto;
+import com.gpumarket.domain.market.dto.ContractComparisonResponseDto.DiscountDto;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.global.api.InvalidRequestException;
 import java.math.BigDecimal;
@@ -21,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import org.springframework.http.HttpStatus;
@@ -124,6 +128,171 @@ public class MarketOfferService {
         rate != null && rate.rate() != null ? rate : null);
   }
 
+  public ContractComparisonResponseDto contracts(long productId, Map<String, String> input) {
+    if (productId < 1 || !Set.of("currency").containsAll(input.keySet())) {
+      throw invalid("양의 상품 ID와 currency만 사용할 수 있습니다.");
+    }
+
+    String currency = currency(input);
+    Instant asOf = Instant.now();
+    var rows = repository.offers(Map.of("productId", productId, "asOf", utc(asOf)));
+    if (rows.isEmpty() && !repository.productExists(productId)) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "상품이 없습니다.");
+    }
+
+    var exchangeRate = rate(currency);
+    var baselines =
+        rows.stream()
+            .filter(row -> "on_demand".equals(row.get("contract_type")))
+            .filter(row -> latestPriceExclusion(row, asOf) == null)
+            .filter(row -> effectiveAmount(row).signum() > 0)
+            .toList();
+    var baseline = baselines.size() == 1 ? baselines.get(0) : null;
+    var estimatedObservationIds =
+        baseline != null
+            ? rows.stream()
+                .filter(row -> "commitment".equals(row.get("contract_type")))
+                .filter(row -> "estimate".equals(row.get("price_certainty")))
+                .filter(row -> "nonExactOffers".equals(latestPriceExclusion(row, asOf)))
+                .map(row -> id(row, "observation_id"))
+                .toList()
+            : List.<Long>of();
+    var components = new HashMap<Long, List<Map<String, Object>>>();
+    for (var component : repository.components(estimatedObservationIds)) {
+      components
+          .computeIfAbsent(number(component, "observation_id"), ignored -> new ArrayList<>())
+          .add(component);
+    }
+
+    var items = new ArrayList<ContractOfferDto>();
+    var discounts = new ArrayList<DiscountDto>();
+    for (var row : rows) {
+      String offerId = string(row.get("offer_id"));
+      String type = upper(row.get("contract_type"));
+      var effective = price(row, "effective_usd_gpu_hour", certainty(row), exchangeRate);
+      if (row.get("observation_id") == null) {
+        effective.put("reason", "PRICE_NOT_OBSERVED");
+      }
+
+      if ("COMMITMENT".equals(type)) {
+        String exclusion = latestPriceExclusion(row, asOf);
+        String unavailable = contractDiscountReason(baselines.size(), baseline, row, exclusion);
+        if (unavailable == null) {
+          var baseAmount = effectiveAmount(baseline);
+          var discount =
+              baseAmount.subtract(effectiveAmount(row)).divide(baseAmount, 6, RoundingMode.HALF_UP);
+          discounts.add(
+              new DiscountDto(
+                  string(baseline.get("offer_id")), offerId, decimal(discount), "OK", null));
+        } else {
+          discounts.add(
+              new DiscountDto(
+                  baseline == null ? null : string(baseline.get("offer_id")),
+                  offerId,
+                  null,
+                  "UNAVAILABLE",
+                  unavailable));
+        }
+
+        if (baseline != null
+            && "nonExactOffers".equals(exclusion)
+            && "estimate".equals(row.get("price_certainty"))
+            && sameContractMinimum(baseline, row)) {
+          var facts = components.getOrDefault(id(row, "observation_id"), List.of());
+          applyDiscountScenario(effective, facts, baseline, exchangeRate);
+        }
+      }
+
+      items.add(
+          new ContractOfferDto(
+              offerId,
+              type == null ? "UNKNOWN" : type,
+              string(row.get("contract_product_type")),
+              (Integer) row.get("commitment_months"),
+              payment(row),
+              string(row.get("observation_id")),
+              time(row, "collected_at"),
+              freshness(time(row, "confirmed_at"), asOf),
+              effective));
+    }
+
+    return new ContractComparisonResponseDto(
+        Long.toString(productId), asOf, items, discounts, DISCLAIMER);
+  }
+
+  private static String contractDiscountReason(
+      int baselineCount,
+      Map<String, Object> baseline,
+      Map<String, Object> commitment,
+      String exclusion) {
+    if (baselineCount != 1) {
+      return baselineCount == 0 ? "BASE_PRICE_MISSING" : "AMBIGUOUS_BASE_PRICE";
+    }
+    if (exclusion != null) {
+      return switch (exclusion) {
+        case "staleOffers" -> "COMMITMENT_PRICE_STALE";
+        case "notFoundOffers" -> "COMMITMENT_PRICE_NOT_AVAILABLE";
+        case "nonExactOffers" -> "COMMITMENT_PRICE_NOT_EXACT";
+        default -> "COMMITMENT_PRICE_MISSING";
+      };
+    }
+    if (!sameContractMinimum(baseline, commitment)
+        || commitment.get("commitment_months") == null
+        || "UNKNOWN".equals(payment(commitment))
+        || !hasText(baseline.get("rule_version"))
+        || !baseline.get("rule_version").equals(commitment.get("rule_version"))) {
+      return "CONDITIONS_NOT_COMPARABLE";
+    }
+    return null;
+  }
+
+  private static boolean sameContractMinimum(
+      Map<String, Object> baseline, Map<String, Object> commitment) {
+    return Objects.equals(
+            decimalKey(baseline.get("minimum_quantity")),
+            decimalKey(commitment.get("minimum_quantity")))
+        && Objects.equals(
+            upper(baseline.get("minimum_quantity_unit")),
+            upper(commitment.get("minimum_quantity_unit")))
+        && (commitment.get("minimum_quantity") == null
+            || hasText(commitment.get("minimum_quantity_unit")));
+  }
+
+  private static void applyDiscountScenario(
+      Map<String, Object> effective,
+      List<Map<String, Object>> components,
+      Map<String, Object> baseline,
+      LatestExchangeRateResponseDto exchangeRate) {
+    if (components.size() != 1) {
+      return;
+    }
+    var component = components.get(0);
+    if (!"discount_rate".equals(component.get("component_type"))
+        || !(component.get("discount_rate") instanceof BigDecimal discount)
+        || discount.signum() < 0
+        || discount.compareTo(BigDecimal.ONE) > 0) {
+      return;
+    }
+
+    var amount =
+        effectiveAmount(baseline)
+            .multiply(BigDecimal.ONE.subtract(discount))
+            .setScale(6, RoundingMode.HALF_UP);
+    effective.put("amount", decimal(amount));
+    effective.put("status", "OK");
+    effective.put("reason", null);
+    effective.put("normalizationId", null);
+    effective.put("ruleVersion", "contract-discount-scenario-v1");
+    effective.put("baselineObservationId", string(baseline.get("observation_id")));
+    effective.put("baselineNormalizationId", string(baseline.get("normalization_id")));
+    effective.put("assumptions", List.of("동일 상품의 온디맨드 실효 단가에 공개 할인율을 적용한 시나리오"));
+    effective.put("krw", exchangeRate == null ? null : krw(exchangeRate, "amount", amount));
+  }
+
+  private static BigDecimal effectiveAmount(Map<String, Object> row) {
+    return (BigDecimal) row.get("effective_usd_gpu_hour");
+  }
+
   public Map<String, Object> summary(Map<String, String> input) {
     var filters = filters(input, true);
     Instant asOf = Instant.now();
@@ -177,6 +346,11 @@ public class MarketOfferService {
 
   private static Decision assess(Map<String, Object> row, Instant asOf) {
     var key = groupKey(row);
+    String exclusion = latestPriceExclusion(row, asOf);
+    return new Decision(key, exclusion == null && key == null ? "incomparableOffers" : exclusion);
+  }
+
+  private static String latestPriceExclusion(Map<String, Object> row, Instant asOf) {
     Instant confirmedAt = time(row, "confirmed_at");
     Instant checkedAt = time(row, "disclosure_checked_at");
     boolean latest = checkedAt != null && (confirmedAt == null || !checkedAt.isBefore(confirmedAt));
@@ -184,21 +358,21 @@ public class MarketOfferService {
         && ("not_found".equals(row.get("disclosure_processing_status"))
             || Set.of("not_disclosed", "login_required", "contact_sales")
                 .contains(stringOrEmpty(row.get("disclosure_status"))))) {
-      return new Decision(key, "notFoundOffers");
+      return "notFoundOffers";
     }
     if (row.get("observation_id") == null) {
-      return new Decision(key, "missingPriceOffers");
+      return "missingPriceOffers";
     }
     if (confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS))) {
-      return new Decision(key, "staleOffers");
+      return "staleOffers";
     }
     if (!"firm".equals(row.get("price_certainty"))) {
-      return new Decision(key, "nonExactOffers");
+      return "nonExactOffers";
     }
     if (!"success".equals(row.get("result_status")) || row.get("effective_usd_gpu_hour") == null) {
-      return new Decision(key, "unavailableNormalizationOffers");
+      return "unavailableNormalizationOffers";
     }
-    return new Decision(key, key == null ? "incomparableOffers" : null);
+    return null;
   }
 
   private static Map<String, Object> groupKey(Map<String, Object> row) {
@@ -275,18 +449,8 @@ public class MarketOfferService {
       Map<String, Object> row, Instant asOf, Related related, LatestExchangeRateResponseDto rate) {
     var decision = assess(row, asOf);
     Instant confirmedAt = time(row, "confirmed_at");
-    String freshness =
-        confirmedAt == null
-            ? "UNKNOWN"
-            : confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)) ? "STALE" : "CURRENT";
-    String certainty =
-        switch (stringOrEmpty(row.get("price_certainty"))) {
-          case "firm" -> "EXACT";
-          case "starting_from" -> "FROM";
-          case "range" -> "RANGE";
-          case "estimate" -> "SCENARIO";
-          default -> "UNKNOWN";
-        };
+
+    String certainty = certainty(row);
     var observation =
         row.get("observation_id") == null
             ? null
@@ -399,7 +563,7 @@ public class MarketOfferService {
         "freshness",
         map(
             "status",
-            freshness,
+            freshness(confirmedAt, asOf),
             "lastSuccessAt",
             confirmedAt,
             "evaluatedAt",
@@ -493,6 +657,23 @@ public class MarketOfferService {
         "수집 당시 방식이 근거에 기록되지 않았습니다.");
   }
 
+  private static String freshness(Instant confirmedAt, Instant asOf) {
+    if (confirmedAt == null) {
+      return "UNKNOWN";
+    }
+    return confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)) ? "STALE" : "CURRENT";
+  }
+
+  private static String certainty(Map<String, Object> row) {
+    return switch (stringOrEmpty(row.get("price_certainty"))) {
+      case "firm" -> "EXACT";
+      case "starting_from" -> "FROM";
+      case "range" -> "RANGE";
+      case "estimate" -> "SCENARIO";
+      default -> "UNKNOWN";
+    };
+  }
+
   private static Map<String, Object> price(
       Map<String, Object> row, String field, String certainty, LatestExchangeRateResponseDto rate) {
     var value = "success".equals(row.get("result_status")) ? (BigDecimal) row.get(field) : null;
@@ -547,7 +728,9 @@ public class MarketOfferService {
             "source",
             rate.source(),
             "selectionPolicyVersion",
-            rate.selectionPolicyVersion());
+            rate.selectionPolicyVersion(),
+            "isPreviousBusinessDay",
+            rate.isPreviousBusinessDay());
     for (int i = 0; i < amounts.length; i += 2) {
       result.put(
           (String) amounts[i],

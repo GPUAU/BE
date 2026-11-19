@@ -64,6 +64,16 @@ class MarketApiTest {
   }
 
   @Test
+  void contractComparisonValidatesProductIdAndCurrency() throws Exception {
+    mvc.perform(get("/api/v1/market/products/0/contracts"))
+        .andExpect(status().isUnprocessableEntity());
+    mvc.perform(get("/api/v1/market/products/1/contracts").param("currency", "EUR"))
+        .andExpect(status().isUnprocessableEntity());
+    mvc.perform(get("/api/v1/market/products/invalid/contracts"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
   void detailRejectsUnsupportedCurrency() throws Exception {
     mvc.perform(get("/api/v1/market/observations/1?currency=EUR"))
         .andExpect(status().isUnprocessableEntity());

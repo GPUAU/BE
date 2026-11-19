@@ -27,6 +27,7 @@ public class LocalSecurityConfig {
                         "/api/v1/market/offers",
                         "/api/v1/market/offers/*",
                         "/api/v1/market/summaries",
+                        "/api/v1/market/products/*/contracts",
                         "/api/v1/exchange-rates/latest",
                         "/api/v1/operations/alerts")
                     .permitAll()
