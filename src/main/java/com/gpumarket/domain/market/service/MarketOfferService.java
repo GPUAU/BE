@@ -5,10 +5,13 @@ import com.gpumarket.domain.exchange.service.ExchangeService;
 import com.gpumarket.domain.market.dto.ContractComparisonResponseDto;
 import com.gpumarket.domain.market.dto.ContractComparisonResponseDto.ContractOfferDto;
 import com.gpumarket.domain.market.dto.ContractComparisonResponseDto.DiscountDto;
+import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
+import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.global.api.InvalidRequestException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -89,6 +92,71 @@ public class MarketOfferService {
         next,
         "disclaimer",
         DISCLAIMER);
+  }
+
+  public PublicPriceLookupDto publicPrices(Map<String, String> input) {
+    Instant asOf = Instant.now();
+    var params = query(filters(input, false), asOf);
+    params.put("cutoff", utc(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)));
+    params.put("pageSize", 101);
+    var found = repository.offers(params);
+    var eligible =
+        found.stream().limit(100).filter(row -> latestPriceExclusion(row, asOf) == null).toList();
+    var related = related(repository, eligible);
+    var items = new ArrayList<PublicPriceDto>();
+    boolean limited = found.size() > 100;
+    for (var row : eligible) {
+      var sources =
+          related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()).stream()
+              .filter(source -> publicSource(string(source.get("sourceUrl"))))
+              .map(
+                  source -> {
+                    Map<String, Object> publicEvidence = new LinkedHashMap<>(source);
+                    publicEvidence.put("excerpt", null);
+                    return publicEvidence;
+                  })
+              .toList();
+      if (sources.isEmpty()) {
+        continue;
+      }
+      if (items.size() == 5) {
+        limited = true;
+        break;
+      }
+      items.add(
+          new PublicPriceDto(
+              string(row.get("offer_id")),
+              string(row.get("observation_id")),
+              string(row.get("normalization_id")),
+              string(row.get("product_id")),
+              string(row.get("provider_id")),
+              string(row.get("provider_name")),
+              string(row.get("raw_price_text")),
+              related.components().getOrDefault(id(row, "observation_id"), List.of()),
+              (Integer) row.get("gpu_count"),
+              upper(row.get("country_code")),
+              string(row.get("region_code")),
+              upper(row.get("system_type")),
+              upper(row.get("contract_type")),
+              time(row, "collected_at"),
+              decimal(effectiveAmount(row)),
+              sources));
+    }
+    return new PublicPriceLookupDto(items, asOf, limited);
+  }
+
+  private static boolean publicSource(String value) {
+    if (value == null) {
+      return false;
+    }
+    try {
+      var uri = URI.create(value);
+      return "https".equalsIgnoreCase(uri.getScheme())
+          && uri.getHost() != null
+          && uri.getUserInfo() == null;
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
   }
 
   public Map<String, Object> detail(long offerId, Map<String, String> input) {
