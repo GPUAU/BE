@@ -36,6 +36,8 @@ public class LocalSecurityConfig {
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/exchange-rate-simulations")
                     .permitAll()
+                    .requestMatchers(HttpMethod.POST, "/api/v1/cost-simulations")
+                    .permitAll()
                     .anyRequest()
                     .denyAll())
         .build();

@@ -16,6 +16,14 @@ public class CatalogRepository {
     this.jdbc = jdbc;
   }
 
+  public boolean modelExists(long modelId) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM gpu_model WHERE gpu_model_id = ?)",
+            Boolean.class,
+            modelId));
+  }
+
   public CatalogResponseDto findCatalog() {
     List<ProviderDto> providers =
         jdbc.query(
