@@ -178,11 +178,11 @@ public class MarketOfferService {
   private static Decision assess(Map<String, Object> row, Instant asOf) {
     var key = groupKey(row);
     Instant confirmedAt = time(row, "confirmed_at");
-    Instant checkedAt = time(row, "checked_at");
+    Instant checkedAt = time(row, "disclosure_checked_at");
     boolean latest = checkedAt != null && (confirmedAt == null || !checkedAt.isBefore(confirmedAt));
     if (latest
-        && ("not_found".equals(row.get("processing_status"))
-            || Set.of("not_disclosed", "login_required", "quote_required")
+        && ("not_found".equals(row.get("disclosure_processing_status"))
+            || Set.of("not_disclosed", "login_required", "contact_sales")
                 .contains(stringOrEmpty(row.get("disclosure_status"))))) {
       return new Decision(key, "notFoundOffers");
     }
@@ -377,15 +377,15 @@ public class MarketOfferService {
         "lastSuccessfulObservation",
         observation,
         "latestDisclosure",
-        row.get("check_id") == null
+        row.get("disclosure_check_id") == null
             ? null
             : map(
                 "status",
                 upper(row.get("disclosure_status")),
                 "verifiedAt",
-                time(row, "checked_at"),
+                time(row, "disclosure_checked_at"),
                 "evidence",
-                related.evidence().getOrDefault(id(row, "check_id"), List.of())),
+                related.evidence().getOrDefault(id(row, "disclosure_check_id"), List.of())),
         "latestCheck",
         row.get("check_id") == null
             ? null
@@ -427,6 +427,7 @@ public class MarketOfferService {
     var observations = new HashSet<Long>();
     for (var row : rows) {
       checks.add(id(row, "check_id"));
+      checks.add(id(row, "disclosure_check_id"));
       checks.add(id(row, "observation_check_id"));
       observations.add(id(row, "observation_id"));
     }

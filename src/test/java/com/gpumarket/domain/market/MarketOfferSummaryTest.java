@@ -25,8 +25,10 @@ class MarketOfferSummaryTest {
     var old = row(4, "east", 32, "firm", now.minus(49, ChronoUnit.HOURS), "1.0");
     var estimate = row(5, "east", 32, "estimate", now, "0.5");
     var missing = row(6, "east", 32, "firm", now, "0.3");
-    missing.put("processing_status", "not_found");
+    missing.put("processing_status", "collection_failed");
     missing.put("checked_at", now);
+    missing.put("disclosure_processing_status", "not_found");
+    missing.put("disclosure_checked_at", now);
     var unknownConfig = row(7, "east", 32, "firm", now, "0.2");
     unknownConfig.remove("vcpu_count");
     when(repository.offers(anyMap()))
