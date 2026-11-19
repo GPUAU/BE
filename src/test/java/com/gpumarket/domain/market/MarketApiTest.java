@@ -24,6 +24,33 @@ class MarketApiTest {
   @Autowired MockMvc mvc;
 
   @Test
+  void availabilityValidatesModelAndFiltersBeforeQuerying() throws Exception {
+    mvc.perform(get("/api/v1/market/availability-records"))
+        .andExpect(status().isUnprocessableEntity());
+    mvc.perform(
+            get("/api/v1/market/availability-records").param("modelId", "1").param("limit", "101"))
+        .andExpect(status().isUnprocessableEntity());
+  }
+
+  @Test
+  void availabilityDistinguishesMalformedQueriesFromInvalidRanges() throws Exception {
+    mvc.perform(get("/api/v1/market/availability-records").param("modelId", "abc"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
+    mvc.perform(
+            get("/api/v1/market/availability-records").param("modelId", "1").param("unknown", "x"))
+        .andExpect(status().isBadRequest());
+    mvc.perform(
+            get("/api/v1/market/availability-records")
+                .param("modelId", "1")
+                .param("limit", "1", "2"))
+        .andExpect(status().isBadRequest());
+    mvc.perform(get("/api/v1/market/availability-records").param("modelId", "0"))
+        .andExpect(status().isUnprocessableEntity())
+        .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+  }
+
+  @Test
   void changesRequiresModelAndValidatesPeriodBeforeQuerying() throws Exception {
     mvc.perform(get("/api/v1/market/changes")).andExpect(status().isUnprocessableEntity());
     mvc.perform(

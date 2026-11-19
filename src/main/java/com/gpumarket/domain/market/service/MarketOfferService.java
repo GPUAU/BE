@@ -71,7 +71,7 @@ public class MarketOfferService {
     var fetched = repository.offers(params);
     var rows = fetched.subList(0, Math.min(limit, fetched.size()));
     var rate = rate(filters.currency());
-    var related = related(rows);
+    var related = related(repository, rows);
     var next =
         fetched.size() > limit
             ? encodeCursor(
@@ -105,7 +105,7 @@ public class MarketOfferService {
     var rate = rate(currency);
     return map(
         "offer",
-        offer(row, now, related(rows), rate),
+        offer(row, now, related(repository, rows), rate),
         "specEvidence",
         repository.specEvidence(number(row, "product_id")).stream()
             .map(e -> map("attributeName", e.get("attribute_name"), "evidence", evidence(e)))
@@ -462,29 +462,6 @@ public class MarketOfferService {
     var decision = assess(row, asOf);
     Instant confirmedAt = time(row, "confirmed_at");
 
-    String certainty = certainty(row);
-    var observation =
-        row.get("observation_id") == null
-            ? null
-            : map(
-                "observationId",
-                string(row.get("observation_id")),
-                "collectedAt",
-                time(row, "collected_at"),
-                "effectiveFrom",
-                time(row, "effective_from"),
-                "priceCertainty",
-                certainty,
-                "rawPriceText",
-                row.get("raw_price_text"),
-                "components",
-                related.components().getOrDefault(id(row, "observation_id"), List.of()),
-                "nominal",
-                price(row, "nominal_usd_gpu_hour", certainty, rate),
-                "effective",
-                price(row, "effective_usd_gpu_hour", certainty, rate),
-                "evidence",
-                related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()));
     return map(
         "offerId",
         string(row.get("offer_id")),
@@ -551,7 +528,7 @@ public class MarketOfferService {
             "minimumQuantityUnit",
             row.get("minimum_quantity_unit")),
         "lastSuccessfulObservation",
-        observation,
+        observation(row, related, rate),
         "latestDisclosure",
         row.get("disclosure_check_id") == null
             ? null
@@ -598,7 +575,33 @@ public class MarketOfferService {
             decision.reason() == null ? List.of() : List.of(decision.reason())));
   }
 
-  private Related related(List<Map<String, Object>> rows) {
+  static Map<String, Object> observation(
+      Map<String, Object> row, Related related, LatestExchangeRateResponseDto rate) {
+    String certainty = certainty(row);
+    return row.get("observation_id") == null
+        ? null
+        : map(
+            "observationId",
+            string(row.get("observation_id")),
+            "collectedAt",
+            time(row, "collected_at"),
+            "effectiveFrom",
+            time(row, "effective_from"),
+            "priceCertainty",
+            certainty,
+            "rawPriceText",
+            row.get("raw_price_text"),
+            "components",
+            related.components().getOrDefault(id(row, "observation_id"), List.of()),
+            "nominal",
+            price(row, "nominal_usd_gpu_hour", certainty, rate),
+            "effective",
+            price(row, "effective_usd_gpu_hour", certainty, rate),
+            "evidence",
+            related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()));
+  }
+
+  static Related related(MarketOfferRepository repository, List<Map<String, Object>> rows) {
     var checks = new HashSet<Long>();
     var observations = new HashSet<Long>();
     for (var row : rows) {
@@ -669,7 +672,7 @@ public class MarketOfferService {
         "수집 당시 방식이 근거에 기록되지 않았습니다.");
   }
 
-  private static String freshness(Instant confirmedAt, Instant asOf) {
+  static String freshness(Instant confirmedAt, Instant asOf) {
     if (confirmedAt == null) {
       return "UNKNOWN";
     }
@@ -983,7 +986,7 @@ public class MarketOfferService {
 
   private record Decision(Map<String, Object> key, String reason) {}
 
-  private record Related(
+  record Related(
       Map<Long, List<Map<String, Object>>> evidence,
       Map<Long, List<Map<String, Object>>> components) {}
 

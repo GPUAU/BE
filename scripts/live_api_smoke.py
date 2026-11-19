@@ -150,3 +150,25 @@ status, invalid = market_query('summaries', {'comparisonType': 'EXCLUDING_REGION
 check(status == 422 and not invalid['isSuccess'], '지원하지 않는 리전 통합 집계 거부')
 status, invalid = request('/api/v1/exchange-rate-simulations', {**payload, 'krwPerUsd': '0'})
 check(status == 422 and not invalid['isSuccess'], '0원 환율 입력 거부')
+
+availability_filters = {'modelId': models['B200'], 'limit': 2}
+status, availability = market_query('availability-records', availability_filters)
+availability_first = availability['result']
+check(status == 200 and availability['isSuccess'] and len(availability_first['items']) == 2
+      and availability_first['nextCursor'], '모델별 가격 확보 상태 첫 페이지')
+status, availability = market_query(
+    'availability-records', {**availability_filters, 'cursor': availability_first['nextCursor']})
+availability_next = availability['result']
+check(status == 200 and availability_next['asOf'] == availability_first['asOf'] and
+      {row['targetId'] for row in availability_first['items']}.isdisjoint(
+          row['targetId'] for row in availability_next['items']),
+      '가격 확보 상태 다음 페이지와 기준 시각')
+status, invalid = market_query(
+    'availability-records', {**availability_filters, 'modelId': models['H100'],
+                             'cursor': availability_first['nextCursor']})
+check(status == 422 and not invalid['isSuccess'], '가격 확보 상태 커서의 모델 변경 거부')
+status, availability = market_query('availability-records', {'modelId': models['B200'], 'limit': 100})
+rows = availability['result']['items']
+check(status == 200 and any(
+    row['lastSuccessfulObservation'] and row['lastSuccessfulObservation']['evidence']
+    and row['freshness']['lastSuccessAt'] for row in rows), '가격 확보 상태의 정상 관측과 출처')
