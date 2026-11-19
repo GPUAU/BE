@@ -2,12 +2,14 @@ package com.gpumarket.domain.simulation.service;
 
 import com.gpumarket.domain.catalog.repository.CatalogRepository;
 import com.gpumarket.domain.market.service.MarketOfferService;
+import com.gpumarket.domain.market.service.MarketOfferService.ComparableGroup;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.CostItem;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.Currency;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.InterestRateType;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.ItemStatus;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.ItemType;
+import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.MarketFilters;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.Period;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.PricingMethod;
 import com.gpumarket.domain.simulation.dto.CostSimulationResponseDto;
@@ -75,42 +77,10 @@ public class CostSimulationService {
       throw invalid("pricing.targetRate", "매출 기준 이익률은 100% 미만이어야 합니다.");
     }
 
-    var byType = new EnumMap<ItemType, CostItem>(ItemType.class);
-    var index = new EnumMap<ItemType, Integer>(ItemType.class);
-    BigDecimal acquisition = ZERO;
-    BigDecimal operating = ZERO;
-    boolean hasCapital = false;
-    boolean hasCost = false;
-    for (int i = 0; i < request.items().size(); i++) {
-      var item = request.items().get(i);
-      String field = "items[" + i + "]";
-      if (byType.putIfAbsent(item.itemType(), item) != null) {
-        throw invalid(field + ".itemType", "원가 항목이 중복되었습니다.");
-      }
-      index.put(item.itemType(), i);
-      validateItem(item, field, scenario);
-      if (!reflected(item) || item.itemType() == ItemType.FINANCING) {
-        continue;
-      }
-
-      BigDecimal value = item.amount();
-      if (item.currency() == Currency.KRW) {
-        if (request.inputFxKrwPerUsd() == null) {
-          throw invalid("inputFxKrwPerUsd", "원화 비용에는 양수 환율이 필요합니다.");
-        }
-        value = value.divide(request.inputFxKrwPerUsd(), PRECISION);
-      }
-      hasCost = true;
-      if (item.period() == Period.ONE_TIME) {
-        hasCapital = true;
-        acquisition = acquisition.add(value, PRECISION);
-      } else {
-        if (item.period() == Period.MONTH)
-          value = value.multiply(BigDecimal.valueOf(12), PRECISION);
-        operating = operating.add(value, PRECISION);
-      }
-    }
-    validateInclusions(byType, index);
+    var costs = itemizedCosts(request.items(), request.inputFxKrwPerUsd(), scenario);
+    var acquisition = costs.acquisition();
+    var operating = costs.operating();
+    var hasCapital = costs.hasCapital();
     var residual = assumptions.residualValueUsd() == null ? ZERO : assumptions.residualValueUsd();
     if (residual.compareTo(acquisition) > 0) {
       throw invalid("assumptions.residualValueUsd", "잔존가치는 초기 투자금 이하여야 합니다.");
@@ -123,15 +93,14 @@ public class CostSimulationService {
       }
       periodHours = month.lengthOfMonth() * 24;
     }
-    BigDecimal electricityHourly = electricityHourly(request, byType);
-    if (!hasCost) {
+    BigDecimal electricityHourly = electricityHourly(request, costs.items());
+    if (!costs.hasCost()) {
       throw invalid("items", "금액을 반영한 원가 항목이 하나 이상 필요합니다.");
     }
 
-    var financing = byType.get(ItemType.FINANCING);
     var loanRate = assumptions.annualInterestRate();
     var rateType = assumptions.interestRateType();
-    validateFinancing(financing, loanRate, rateType);
+    validateFinancing(costs.items().get(ItemType.FINANCING), loanRate, rateType);
 
     var warnings = new ArrayList<String>();
     BigDecimal usedRate = loanRate != null && hasCapital ? loanRate : ZERO;
@@ -142,13 +111,7 @@ public class CostSimulationService {
     }
     if (target.signum() < 0) warnings.add("NEGATIVE_TARGET_RATE");
 
-    var missing = new ArrayList<ItemType>();
-    for (var entry : REVIEW_ITEMS) {
-      if (!byType.containsKey(entry)) missing.add(entry);
-    }
-    for (var item : byType.values()) {
-      if (item.status() == ItemStatus.NOT_INCLUDED) missing.add(item.itemType());
-    }
+    var missing = new ArrayList<>(costs.missing());
     if (loanRate != null && !hasCapital && !missing.contains(ItemType.FINANCING)) {
       missing.add(ItemType.FINANCING);
     }
@@ -178,10 +141,7 @@ public class CostSimulationService {
             : hourly.multiply(ONE.add(target), PRECISION);
     if (candidate.signum() <= 0) warnings.add("NON_POSITIVE_CANDIDATE_PRICE");
 
-    long model = modelId(request.modelId(), "modelId");
-    if (!catalog.modelExists(model)) {
-      throw invalid("modelId", "선택한 GPU 모델이 없습니다.");
-    }
+    validateModel(request.modelId(), "modelId");
     var comparison = compare(request, hourly);
     return new CostSimulationResponseDto(
         "USD/GPU-hour",
@@ -222,6 +182,67 @@ public class CostSimulationService {
         comparison,
         false,
         "입력 가정에 따른 시뮬레이션이며 실제 견적이나 확정 판매가격이 아닙니다.");
+  }
+
+  record ItemizedCosts(
+      BigDecimal acquisition,
+      BigDecimal operating,
+      boolean hasCapital,
+      boolean hasCost,
+      Map<ItemType, CostItem> items,
+      List<ItemType> missing) {}
+
+  static ItemizedCosts itemizedCosts(List<CostItem> items, BigDecimal fx, boolean scenario) {
+    var byType = new EnumMap<ItemType, CostItem>(ItemType.class);
+    var index = new EnumMap<ItemType, Integer>(ItemType.class);
+    BigDecimal acquisition = ZERO;
+    BigDecimal operating = ZERO;
+    boolean hasCapital = false;
+    boolean hasCost = false;
+    for (int i = 0; i < items.size(); i++) {
+      var item = items.get(i);
+      String field = "items[" + i + "]";
+      if (byType.putIfAbsent(item.itemType(), item) != null) {
+        throw invalid(field + ".itemType", "원가 항목이 중복되었습니다.");
+      }
+      index.put(item.itemType(), i);
+      validateItem(item, field, scenario);
+      if (!reflected(item) || item.itemType() == ItemType.FINANCING) {
+        continue;
+      }
+
+      BigDecimal value = item.amount();
+      if (item.currency() == Currency.KRW) {
+        if (fx == null) {
+          throw invalid("inputFxKrwPerUsd", "원화 비용에는 양수 환율이 필요합니다.");
+        }
+        value = value.divide(fx, PRECISION);
+      }
+      hasCost = true;
+      if (item.period() == Period.ONE_TIME) {
+        hasCapital = true;
+        acquisition = acquisition.add(value, PRECISION);
+      } else {
+        if (item.period() == Period.MONTH)
+          value = value.multiply(BigDecimal.valueOf(12), PRECISION);
+        operating = operating.add(value, PRECISION);
+      }
+    }
+    validateInclusions(byType, index);
+    var missing = new ArrayList<ItemType>();
+    for (var entry : REVIEW_ITEMS) {
+      if (!byType.containsKey(entry)) missing.add(entry);
+    }
+    for (var item : byType.values()) {
+      if (item.status() == ItemStatus.NOT_INCLUDED) missing.add(item.itemType());
+    }
+    return new ItemizedCosts(acquisition, operating, hasCapital, hasCost, byType, missing);
+  }
+
+  void validateModel(String modelId, String field) {
+    if (!catalog.modelExists(modelId(modelId, field))) {
+      throw invalid(field, "선택한 GPU 모델이 없습니다.");
+    }
   }
 
   private static void validateItem(CostItem item, String field, boolean scenario) {
@@ -266,7 +287,7 @@ public class CostSimulationService {
     }
   }
 
-  private static void validateFinancing(CostItem item, BigDecimal rate, InterestRateType type) {
+  static void validateFinancing(CostItem item, BigDecimal rate, InterestRateType type) {
     if (item == null || item.status() == ItemStatus.NOT_INCLUDED) {
       if (rate != null || type != InterestRateType.NOT_APPLIED) {
         throw invalid("assumptions.annualInterestRate", "금리를 쓰려면 금융 항목과 금리 종류를 입력하세요.");
@@ -285,51 +306,9 @@ public class CostSimulationService {
     if (filters == null)
       return new MarketComparison("NOT_REQUESTED", "MARKET_FILTERS_NOT_PROVIDED", List.of());
 
-    if (filters.modelId() != null
-        && modelId(filters.modelId(), "marketFilters.modelId")
-            != modelId(request.modelId(), "modelId")) {
-      throw invalid("marketFilters.modelId", "원가와 비교 시장의 GPU 모델이 다릅니다.");
-    }
-    if (filters.countryCode() == null
-        || filters.systemType() == null
-        || filters.serviceOption() == null
-        || filters.gpuCount() == null
-        || filters.contractType() == null
-        || !present(filters.contractProductType())
-        || !present(filters.intraNodeInterconnect())
-        || filters.paymentOption() == null) {
-      throw new CostInputException(
-          "marketFilters", "시장 비교에 필요한 구성·지역·계약 조건을 입력하세요.", "MARKET_CONDITIONS_UNSPECIFIED");
-    }
-    if (!filters.gpuCount().equals(request.assumptions().gpuCount())) {
-      throw invalid("marketFilters.gpuCount", "원가와 비교 상품의 GPU 수가 다릅니다.");
-    }
-    boolean commitment = "COMMITMENT".equals(filters.contractType());
-    if (commitment != (filters.commitmentMonths() != null)
-        || commitment == "NOT_APPLICABLE".equals(filters.paymentOption())) {
-      throw invalid("marketFilters.paymentOption", "약정 기간과 선납 방식이 계약 유형에 맞아야 합니다.");
-    }
-
-    var query = new HashMap<String, String>();
-    query.put("modelId", request.modelId());
-    query.put("countryCode", filters.countryCode());
-    query.put("systemType", filters.systemType());
-    query.put("serviceOption", filters.serviceOption());
-    query.put("gpuCount", filters.gpuCount().toString());
-    query.put("contractType", filters.contractType());
-    query.put("contractProductType", filters.contractProductType());
-    query.put("intraNodeInterconnect", filters.intraNodeInterconnect());
-    query.put("paymentOption", filters.paymentOption());
-    if (filters.commitmentMonths() != null)
-      query.put("commitmentMonths", filters.commitmentMonths().toString());
-    if (filters.providerType() != null) query.put("providerType", filters.providerType());
-    if (filters.regionCode() != null) query.put("regionCode", filters.regionCode());
-    if (filters.providerIds() != null && !filters.providerIds().isEmpty()) {
-      query.put("providerIds", String.join(",", filters.providerIds()));
-    }
-
     var groups =
-        market.comparablePrices(query).stream()
+        comparableMarketGroups(request.modelId(), request.assumptions().gpuCount(), filters, false)
+            .stream()
             .map(
                 group -> {
                   var sources = new LinkedHashMap<String, Map<String, Object>>();
@@ -368,6 +347,54 @@ public class CostSimulationService {
     return groups.isEmpty()
         ? new MarketComparison("NOT_AVAILABLE", "SAME_CONDITION_MARKET_PRICE_MISSING", List.of())
         : new MarketComparison("OK", null, groups);
+  }
+
+  List<ComparableGroup> comparableMarketGroups(
+      String inputModelId, int gpuCount, MarketFilters filters, boolean requirePositive) {
+    if (filters.modelId() != null
+        && modelId(filters.modelId(), "marketFilters.modelId")
+            != modelId(inputModelId, "modelId")) {
+      throw invalid("marketFilters.modelId", "원가와 비교 시장의 GPU 모델이 다릅니다.");
+    }
+    if (filters.countryCode() == null
+        || filters.systemType() == null
+        || filters.serviceOption() == null
+        || filters.gpuCount() == null
+        || filters.contractType() == null
+        || !present(filters.contractProductType())
+        || !present(filters.intraNodeInterconnect())
+        || filters.paymentOption() == null) {
+      throw new CostInputException(
+          "marketFilters", "시장 비교에 필요한 구성·지역·계약 조건을 입력하세요.", "MARKET_CONDITIONS_UNSPECIFIED");
+    }
+    if (!filters.gpuCount().equals(gpuCount)) {
+      throw invalid("marketFilters.gpuCount", "원가와 비교 상품의 GPU 수가 다릅니다.");
+    }
+    boolean commitment = "COMMITMENT".equals(filters.contractType());
+    if (commitment != (filters.commitmentMonths() != null)
+        || commitment == "NOT_APPLICABLE".equals(filters.paymentOption())) {
+      throw invalid("marketFilters.paymentOption", "약정 기간과 선납 방식이 계약 유형에 맞아야 합니다.");
+    }
+
+    var query = new HashMap<String, String>();
+    query.put("modelId", inputModelId);
+    query.put("countryCode", filters.countryCode());
+    query.put("systemType", filters.systemType());
+    query.put("serviceOption", filters.serviceOption());
+    query.put("gpuCount", filters.gpuCount().toString());
+    query.put("contractType", filters.contractType());
+    query.put("contractProductType", filters.contractProductType());
+    query.put("intraNodeInterconnect", filters.intraNodeInterconnect());
+    query.put("paymentOption", filters.paymentOption());
+    if (filters.commitmentMonths() != null)
+      query.put("commitmentMonths", filters.commitmentMonths().toString());
+    if (filters.providerType() != null) query.put("providerType", filters.providerType());
+    if (filters.regionCode() != null) query.put("regionCode", filters.regionCode());
+    if (filters.providerIds() != null && !filters.providerIds().isEmpty()) {
+      query.put("providerIds", String.join(",", filters.providerIds()));
+    }
+
+    return market.comparablePrices(query, requirePositive);
   }
 
   private static BigDecimal electricityHourly(
