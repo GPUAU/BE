@@ -44,14 +44,18 @@ CREATE TEMP TABLE collection_target(target_id bigint, source_id bigint, scope_de
             (2,'2026-11-18T08:00Z','2026-11-18T08:30Z','partial_failure','v1'),
             (3,'2026-11-18T09:00Z','2026-11-18T11:00Z','success','v1')
           """);
-      jdbc.update("INSERT INTO collection_target VALUES (1,11,'API'),(2,12,'공개 페이지')");
+      jdbc.update(
+          "INSERT INTO collection_target VALUES (1,11,'API'),(2,12,'공개 페이지'),(3,11,'별도 API')");
       jdbc.update(
           """
           INSERT INTO collection_check VALUES
             (10,1,1,'2026-11-18T07:05Z','success','target',NULL),
+            (19,2,1,'2026-11-18T08:05Z','success','offer',NULL),
             (20,2,1,'2026-11-18T08:10Z','validation_failed','target','검증 실패'),
             (21,2,1,'2026-11-18T08:20Z','success','offer',NULL),
             (22,2,2,'2026-11-18T08:11Z','success','offer',NULL),
+            (23,2,3,'2026-11-18T08:12Z','success','offer',NULL),
+            (24,2,3,'2026-11-18T08:13Z','collection_failed','target','수집 실패'),
             (30,3,1,'2026-11-18T10:30Z','success','target',NULL)
           """);
       var repository = new CollectionRunRepository(new NamedParameterJdbcTemplate(jdbc));
@@ -68,6 +72,10 @@ CREATE TEMP TABLE collection_target(target_id bigint, source_id bigint, scope_de
       assertThat(targets.get(0).result().lastSuccessAt())
           .isEqualTo(Instant.parse("2026-11-18T07:05:00Z"));
       assertThat(targets.get(1).result().processingStatus()).isEqualTo("SUCCESS");
+      assertThat(targets.get(1).result().lastSuccessAt())
+          .isEqualTo(Instant.parse("2026-11-18T08:11:00Z"));
+      assertThat(targets.get(2).result().processingStatus()).isEqualTo("COLLECTION_FAILED");
+      assertThat(targets.get(2).result().lastSuccessAt()).isNull();
       assertThat(repository.targets(List.of(2L), 12L, cutoff)).containsExactly(targets.get(1));
 
       var running = new CollectionRunsRequestDto(null, null, null, "running", 50, null);

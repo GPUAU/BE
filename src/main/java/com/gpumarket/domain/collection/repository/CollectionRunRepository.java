@@ -100,7 +100,7 @@ WHERE r.started_at <= :asOf
         WITH selected AS (
           SELECT DISTINCT ON (c.run_id, c.target_id)
                  c.run_id, c.target_id, t.source_id, t.scope_description,
-                 c.check_id, c.checked_at, c.processing_status, c.reason
+                 c.check_id, c.check_scope, c.checked_at, c.processing_status, c.reason
           FROM collection_check c JOIN collection_target t USING (target_id)
           WHERE c.run_id IN (:runIds) AND c.checked_at <= :asOf
           %s
@@ -113,6 +113,7 @@ WHERE r.started_at <= :asOf
           SELECT prior.checked_at AS last_success_at
           FROM collection_check prior JOIN collection_run earlier ON earlier.run_id = prior.run_id
           WHERE prior.target_id = s.target_id AND prior.processing_status = 'success'
+            AND (s.check_scope <> 'target' OR prior.check_scope = 'target')
             AND (prior.checked_at, prior.check_id) <= (s.checked_at, s.check_id)
             AND (earlier.started_at, earlier.run_id) <= (r.started_at, r.run_id)
           ORDER BY prior.checked_at DESC, prior.check_id DESC LIMIT 1
