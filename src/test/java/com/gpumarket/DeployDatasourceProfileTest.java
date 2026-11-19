@@ -6,6 +6,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.env.Environment;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
@@ -22,9 +23,14 @@ import org.springframework.test.context.TestPropertySource;
     })
 class DeployDatasourceProfileTest {
   @Autowired DataSource dataSource;
+  @Autowired Environment environment;
 
   @Test
-  void deployUsesRdsVariablesRatherThanLocalVariables() throws Exception {
+  void deployUsesRdsVariablesAndDisablesLocalSwagger() throws Exception {
+    assertThat(environment.getActiveProfiles()).containsExactly("deploy");
+    assertThat(environment.getProperty("springdoc.swagger-ui.enabled", Boolean.class)).isFalse();
+    assertThat(environment.getProperty("server.address")).isNull();
+
     try (var connection = dataSource.getConnection()) {
       assertThat(connection.getMetaData().getURL())
           .contains("deployprofile")

@@ -41,7 +41,9 @@ Java 17, Spring Boot 3.3.7, Gradle 8.12.1, PostgreSQL을 사용한다.
 
 ## 실행
 
-JDK 17과 PostgreSQL이 필요하다. `.env.example`은 이름만 제공하며, Spring이 `.env`를 자동으로 읽지는 않는다. 실행 환경의 환경변수 또는 배포 플랫폼의 Secret으로 `DATABASE_URL`(JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`를 주입한다. 운영 데이터베이스에서 스키마를 자동 생성하거나 변경하지 않도록 `ddl-auto=validate`를 사용한다. 실제 엔터티와 검증된 스키마 마이그레이션은 후속 작업이다.
+JDK 17과 PostgreSQL이 필요하다. 활성 프로필을 지정하지 않으면 `application.yml`의 기본값에 따라 `local`로 실행한다. 배포 환경에서는 `SPRING_PROFILES_ACTIVE=deploy`를 명시한다.
+
+로컬 DB는 `DATABASE_URL`(JDBC URL), `DATABASE_USER`, `DATABASE_PASSWORD`로 연결한다. `.env.example`에 변수 이름이 있으며, Spring은 `.env`를 자동으로 읽지 않으므로 실행 환경에 값을 주입해야 한다. `ddl-auto=validate`로 스키마를 검증하며, 실행 전에 ERD 스키마를 준비한다.
 
 ```sh
 ./gradlew test
@@ -52,7 +54,7 @@ JDK 17과 PostgreSQL이 필요하다. `.env.example`은 이름만 제공하며, 
 
 `GET /api/v1/catalog`은 ERD의 `provider`, `gpu_model`, `product`에서 사업자·모델·세대·지역을 조회한다. 계약·상품·사업자 유형 등의 필터 선택지는 API 명세에 정의된 값이다. 데이터가 없으면 해당 목록은 빈 배열이며 미확인 지역과 출시일은 null이다. 응답은 `isSuccess`, `code`, `message`, `result`, `meta`를 사용하고 내부 DB 오류는 상세 정보를 노출하지 않는다.
 
-기본 보안 정책은 모든 HTTP 요청을 거부한다. `local` 프로필에서는 지정된 개발용 경로를 로컬 PC에서 호출할 수 있다. 로컬 개발 DB에서 AWS·Azure·Nebius·Verda 가격 관측을 검증했다.
+`local` 프로필에서는 지정된 개발용 경로를 로컬 PC에서 호출할 수 있다. `deploy`에서는 인증·인가 정책이 구현될 때까지 모든 HTTP 요청을 차단한다. 로컬 개발 DB에서 AWS·Azure·Nebius·Verda 가격 관측을 검증했다.
 
 ### 현재 구현: 환율 조회와 가상 환산
 
@@ -65,7 +67,7 @@ JDK 17과 PostgreSQL이 필요하다. `.env.example`은 이름만 제공하며, 
 
 ## 접근과 비밀정보
 
-기본 프로필은 모든 HTTP 요청을 거부한다. `local` 프로필에서만 `127.0.0.1`에 바인딩하고 현재 구현한 카탈로그·시장가격·환율·수집 경고 GET 및 환율 시뮬레이션 POST를 허용한다. 나머지 경로·메서드는 거부한다. `deploy`, `prod` 또는 `production`이 함께 활성화되면 로컬 허용 정책은 적용되지 않는다. 로컬에서만 CSRF를 비활성화하며, 팀 인증·인가 방식은 아직 구현되지 않았다. 배포 환경에서 `local` 프로필이나 바인딩 주소 변경을 사용하지 않는다.
+`local` 프로필에서는 `127.0.0.1`에 바인딩하고 현재 구현한 카탈로그·시장가격·환율·수집 경고 GET 및 환율 시뮬레이션 POST를 허용한다. 나머지 경로·메서드는 거부한다. `deploy`, `prod` 또는 `production`이 함께 활성화되면 로컬 허용 정책은 적용되지 않는다. 로컬에서만 CSRF를 비활성화하며, 팀 인증·인가 방식은 아직 구현되지 않았다. 배포 환경에서 `local` 프로필이나 바인딩 주소 변경을 사용하지 않는다.
 
 로컬 PostgreSQL 접속 환경변수를 지정한 뒤 다음과 같이 실행한다. 아래 접속 정보를 자신의 개발 DB에 맞게 설정한다.
 
@@ -73,14 +75,38 @@ JDK 17과 PostgreSQL이 필요하다. `.env.example`은 이름만 제공하며, 
 export DATABASE_URL=jdbc:postgresql://127.0.0.1:5432/gpu_market
 export DATABASE_USER=your_local_db_user
 export DATABASE_PASSWORD=
-export SPRING_PROFILES_ACTIVE=local
 export SERVER_PORT=18082
 ./gradlew bootRun
 ```
 
 테이블이 없는 새 DB에서는 요청이 보안 차단을 통과해도 `DATA_UNAVAILABLE`로 응답한다. 다른 포트의 Vue 개발 서버에서 브라우저로 직접 호출할 때는 별도의 CORS 정책이나 개발 프록시가 필요하다.
 
-배포 시 `SPRING_PROFILES_ACTIVE=deploy`와 `RDS_JDBC_URL`, `RDS_USERNAME`, `RDS_PASSWORD`를 환경변수로 주입한다. Kubernetes에서는 승인된 Secret을 사용하고 인증정보를 이미지·Git에 넣지 않는다. `ddl-auto=validate`이며 스키마 자동 생성·수정은 하지 않는다. RDS 실연결, TLS, 네트워크 및 인증은 아직 확인하지 않았다. 배포 프로필의 HTTP 요청은 접근 제어를 구현할 때까지 차단된다.
+### Kubernetes 배포 설정
+
+배포용 Spring 컨테이너의 환경변수에 `SPRING_PROFILES_ACTIVE=deploy`를 명시한다. 그러면 `application-deploy.yml`의 RDS 설정을 사용한다. 아래는 기존 Deployment의 `spec.template.spec.containers[].env`에 넣는 예시다. Secret 이름과 키는 배포 환경에서 사용하는 값에 맞춘다.
+
+```yaml
+env:
+  - name: SPRING_PROFILES_ACTIVE
+    value: deploy
+  - name: RDS_JDBC_URL
+    valueFrom:
+      secretKeyRef:
+        name: gpu-runtime
+        key: datasource-url
+  - name: RDS_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: gpu-runtime
+        key: datasource-username
+  - name: RDS_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: gpu-runtime
+        key: datasource-password
+```
+
+`deploy`에서는 Swagger가 비활성화되고, 배포용 접근 제어를 구현할 때까지 HTTP 요청을 차단한다. RDS 실연결, TLS, 네트워크 및 인증은 배포 환경에서 별도로 검증한다.
 
 `GET /api/v1/operations/alerts`는 운영 경고를 필터와 커서로 조회한다. 빈 배열은 기록이 없다는 뜻이며 수집 성공을 보장하지 않는다. 커서는 `asOf`와 필터·정렬 위치를 유지하나, 그 시점보다 이전 시각으로 나중에 적재된 기록이나 상태 수정까지 완전히 고정하는 DB 스냅샷은 아니다.
 

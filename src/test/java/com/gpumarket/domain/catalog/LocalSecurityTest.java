@@ -1,5 +1,6 @@
 package com.gpumarket.domain.catalog;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -19,19 +20,24 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.core.env.Environment;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest({CatalogController.class, ExchangeController.class})
 @Import({SecurityConfig.class, LocalSecurityConfig.class})
-@ActiveProfiles("local")
 class LocalSecurityTest {
   @Autowired MockMvc mvc;
+  @Autowired Environment environment;
   @MockBean CatalogService catalog;
   @MockBean ExchangeService exchange;
 
   @Test
-  void permitsCatalogAndKeepsOtherPathsDenied() throws Exception {
+  void defaultsToLocalAndPermitsCatalogWhileKeepingOtherPathsDenied() throws Exception {
+    assertThat(environment.getActiveProfiles()).isEmpty();
+    assertThat(environment.getDefaultProfiles()).containsExactly("local");
+    assertThat(environment.getProperty("server.address")).isEqualTo("127.0.0.1");
+    assertThat(environment.getProperty("springdoc.swagger-ui.enabled", Boolean.class)).isTrue();
+
     when(catalog.getCatalog())
         .thenReturn(
             new CatalogResponseDto(
