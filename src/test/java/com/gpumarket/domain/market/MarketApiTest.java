@@ -24,6 +24,15 @@ class MarketApiTest {
   @Autowired MockMvc mvc;
 
   @Test
+  void availabilityValidatesModelAndFiltersBeforeQuerying() throws Exception {
+    mvc.perform(get("/api/v1/market/availability-records"))
+        .andExpect(status().isUnprocessableEntity());
+    mvc.perform(
+            get("/api/v1/market/availability-records").param("modelId", "1").param("limit", "101"))
+        .andExpect(status().isUnprocessableEntity());
+  }
+
+  @Test
   void changesRequiresModelAndValidatesPeriodBeforeQuerying() throws Exception {
     mvc.perform(get("/api/v1/market/changes")).andExpect(status().isUnprocessableEntity());
     mvc.perform(

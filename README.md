@@ -186,3 +186,11 @@ GPU_API_BASE_URL=http://127.0.0.1:18083 python3 scripts/live_api_smoke.py
 - 공식 근거가 있는 동일 오퍼의 미공개 점검 이후 공개 관측이 확인되면 공개 전환을 반환한다. 이벤트 시각은 관측 시각이며 실제 변경일은 별도로 확인해야 한다.
 - `limit` 기본값은 50, 최대값은 100이다. 후속 요청에 같은 필터와 `nextCursor`를 전달한다. 커서는 30분 동안 유효하며 첫 요청의 `asOf`를 이어받는다. 각 요청은 별도 DB 스냅샷을 사용한다.
 - `includeKrwDecomposition=true`이면 전후 관측에 저장된 공식 USD/KRW 환산 근거가 하나씩 있을 때 가격 효과와 환율 효과를 계산한다. 근거가 부족하면 계산 불가 상태를 반환한다. 대표 오퍼 교체는 시점별 대표가 재현 정책이 확보된 이후에 지원한다.
+
+### 모델·사업자별 가격 확보 상태 조회
+
+`GET /api/v1/market/availability-records?modelId=2`는 수집 대상별 최근 점검 상태(`latestCheck`), 마지막 공식 공개 상태(`latestDisclosure`), 마지막 정상 가격 관측(`lastSuccessfulObservation`)을 반환한다. 상품·오퍼가 연결되지 않은 대상도 조회할 수 있다. 공식 근거가 있는 미공개는 `NOT_PUBLIC`이며, 미발견은 최근 점검에 `NOT_FOUND`로 표시한다. 점검 이력이 없으면 `UNKNOWN`으로 표시한다.
+
+- 최근 점검이 실패해도 이전 정상 가격·수집 시각·증빙을 유지한다. `freshness`는 가격 관측에 연결된 정상 확인 시각을 기준으로 하며 48시간을 넘기면 `STALE`이다.
+- `providerIds`, `countryCode`, `contractType`으로 좁힐 수 있다. 국가나 계약으로 좁혔을 때 범위를 확인할 수 없는 전체 대상 점검은 해당 국가·계약의 상태 판정에 사용하지 않는다.
+- `limit` 기본값은 50, 최대값은 100이다. 다음 페이지 요청에는 같은 필터와 `nextCursor`를 사용한다. 커서는 첫 요청의 `asOf`를 유지하며 30분 후 만료된다.
