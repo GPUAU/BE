@@ -641,7 +641,7 @@ public class MarketOfferService {
     return new Related(evidence, components);
   }
 
-  private static Map<String, Object> evidence(Map<String, Object> row) {
+  static Map<String, Object> evidence(Map<String, Object> row) {
     return map(
         "evidenceId",
         string(row.get("evidence_id")),
