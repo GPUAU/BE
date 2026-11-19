@@ -31,7 +31,8 @@ public class LocalSecurityConfig {
                         "/api/v1/market/summaries",
                         "/api/v1/market/products/*/contracts",
                         "/api/v1/exchange-rates/latest",
-                        "/api/v1/operations/alerts")
+                        "/api/v1/operations/alerts",
+                        "/api/v1/operations/collection-runs")
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/exchange-rate-simulations")
                     .permitAll()
