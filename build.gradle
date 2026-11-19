@@ -1,0 +1,66 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.7'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.gpumarket'
+version = '0.1.0-SNAPSHOT'
+java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+repositories { mavenCentral() }
+configurations { googleJavaFormat }
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'org.postgresql:postgresql'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'com.h2database:h2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    googleJavaFormat 'com.google.googlejavaformat:google-java-format:1.25.2:all-deps'
+}
+tasks.named('test') { useJUnitPlatform() }
+
+def javaSources = fileTree('src') { include '**/*.java' }
+def compilerExports = [
+    'api', 'code', 'file', 'main', 'parser', 'tree', 'util'
+].collect { "--add-exports=jdk.compiler/com.sun.tools.javac.${it}=ALL-UNNAMED" }
+
+tasks.register('googleJavaFormat', JavaExec) {
+    group = 'formatting'
+    description = 'Apply Google Java Format to Java sources and tests.'
+    classpath = configurations.googleJavaFormat
+    mainClass = 'com.google.googlejavaformat.java.Main'
+    jvmArgs compilerExports
+    args '--replace'
+    args javaSources.files.sort { it.path }.collect { it.path }
+}
+
+tasks.register('googleJavaFormatCheck', JavaExec) {
+    group = 'verification'
+    description = 'Check Google Java formatting and reject wildcard imports.'
+    classpath = configurations.googleJavaFormat
+    mainClass = 'com.google.googlejavaformat.java.Main'
+    jvmArgs compilerExports
+    args '--dry-run', '--set-exit-if-changed'
+    args javaSources.files.sort { it.path }.collect { it.path }
+    doFirst {
+        def invalid = javaSources.files.findAll { file ->
+            file.readLines('UTF-8').any { it ==~ /\s*import\s+(static\s+)?[^;]+\.\*\s*;/ }
+        }
+        if (!invalid.isEmpty()) {
+            throw new GradleException("Wildcard imports are not allowed: ${invalid*.path}")
+        }
+    }
+}
+
+tasks.named('check') { dependsOn tasks.named('googleJavaFormatCheck') }
+
+tasks.register('collectExchangeRate', JavaExec) {
+    group = 'application'
+    description = 'Collect and save a Korea Eximbank USD/KRW exchange rate once.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.gpumarket.domain.exchange.collector.KoreaEximCollector'
+}

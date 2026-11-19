@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${RDS_JDBC_URL}
+    username: ${RDS_USERNAME}
+    password: ${RDS_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
