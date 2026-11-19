@@ -17,7 +17,9 @@ record IrrCashFlow(
     BigDecimal operatingCost,
     BigDecimal annualGpuHours) {
   private static final BigDecimal TWO = BigDecimal.valueOf(2);
-  private static final MathContext PRECISION = MathContext.DECIMAL128;
+  // The search bound can exceed 50 integer digits when a small KRW acquisition is converted to USD.
+  // Keep those digits plus the 20 fractional digits needed for the bisection tolerance.
+  private static final MathContext PRECISION = new MathContext(80, RoundingMode.HALF_EVEN);
   private static final BigDecimal FACTOR_TOLERANCE = new BigDecimal("0.00000000000000000001");
   private static final int RESULT_SCALE = 12;
 

@@ -236,7 +236,7 @@ public class IrrSimulationService {
       TargetPrice target) {
     String irr = projection.irr(price);
     String reason = irr == null ? irrFailure(projection, price) : null;
-    if (type == reference.type() && EXCEEDS_CAP.equals(target.reason()) && reason == null) {
+    if (type == reference.type() && EXCEEDS_CAP.equals(target.reason())) {
       reason = EXCEEDS_CAP;
     }
     return new MarketScenario(

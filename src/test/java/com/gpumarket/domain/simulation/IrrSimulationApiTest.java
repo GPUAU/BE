@@ -191,6 +191,52 @@ class IrrSimulationApiTest {
         .andExpect(jsonPath("$.errors[0].field").value("costInput.items"));
   }
 
+  @Test
+  void returnsTheConstraintReasonEvenWhenTheCapHasNoIrr() throws Exception {
+    var request = example().put("marketConstraint", "MEDIAN");
+    request.set("marketFilters", marketFilters());
+    ((ObjectNode) request.path("costInput").path("items").get(1)).put("amount", "1000000");
+    when(market.comparablePrices(anyMap(), eq(true)))
+        .thenReturn(
+            List.of(
+                new ComparableGroup(
+                    Map.of("regionCode", "region-a"),
+                    Map.of(
+                        "providerCount",
+                        1,
+                        "productCount",
+                        1,
+                        "offerCount",
+                        1,
+                        "observationCount",
+                        1),
+                    List.of(offer("1", 1, "12")),
+                    Instant.EPOCH)));
+
+    submit(request)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.result.resultStatus").value("NO_FEASIBLE_PRICE"))
+        .andExpect(jsonPath("$.result.marketScenarios[1].status").value("IRR_UNAVAILABLE"))
+        .andExpect(jsonPath("$.result.marketScenarios[1].irr").isEmpty())
+        .andExpect(
+            jsonPath("$.result.marketScenarios[1].reason").value("TARGET_PRICE_ABOVE_MARKET_CAP"));
+  }
+
+  @Test
+  void preservesIrrPrecisionForLargeCashFlowsAndSmallInvestments() throws Exception {
+    var request = example().put("investment", "0.00000001").put("residualValue", "0");
+    var cost = (ObjectNode) request.path("costInput");
+    ((ObjectNode) cost.path("assumptions")).put("gpuCount", Integer.MAX_VALUE);
+    ((ObjectNode) cost.path("items").get(1)).put("amount", "0");
+    request.putArray("candidatePrices").add("9999999999999999.999999999999");
+
+    submit(request)
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.result.candidateResults[0].irr")
+                .value("18811956747719999999999999998118804324.228000000000"));
+  }
+
   private ComparableOffer offer(String id, long providerId, String price) {
     return new ComparableOffer(
         id,
