@@ -72,6 +72,18 @@ item = converted['result']['items'][0]
 check(status == 200 and item['status'] == 'OK', '직접 환율 시뮬레이션')
 expected = Decimal(str(point['effectiveUsdGpuHour'])) * Decimal('1400')
 check(abs(Decimal(str(item['krwPerGpuHour'])) - expected) <= Decimal('0.000001'), '환산 금액 검증')
+runs_path = '/api/v1/operations/collection-runs'
+status, runs = request(runs_path + '?limit=1')
+first_run_page = runs['result']
+check(status == 200 and len(first_run_page['items']) == 1 and first_run_page['nextCursor'],
+      '수집 실행 이력과 대상 목록')
+status, runs = request(runs_path + '?' + urlencode({'limit': 1, 'cursor': first_run_page['nextCursor']}))
+second_run_page = runs['result']
+check(status == 200 and second_run_page['asOf'] == first_run_page['asOf'] and
+      second_run_page['items'][0]['runId'] != first_run_page['items'][0]['runId'],
+      '수집 실행 이력 다음 페이지')
+status, invalid_run = request(runs_path + '?sourceId=invalid')
+check(status == 400 and invalid_run['code'] == 'INVALID_REQUEST', '수집 실행 이력 출처 형식 검증')
 status, alerts = request('/api/v1/operations/alerts?limit=50')
 check(status == 200 and alerts['isSuccess'] and isinstance(alerts['result']['items'], list), '운영 경고 목록')
 status, invalid = request('/api/v1/market/price-histories?modelId=0&from=2026-01-01T00%3A00%3A00Z&to=2026-01-02T00%3A00%3A00Z')
