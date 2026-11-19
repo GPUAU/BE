@@ -41,6 +41,17 @@ class MarketApiTest {
   }
 
   @Test
+  void historyRejectsRequestsBeyondTwoYearsBeforeAccessingTheDatabase() throws Exception {
+    mvc.perform(
+            get("/api/v1/market/price-histories")
+                .param("modelId", "1")
+                .param("from", "2023-01-01T00:00:00Z")
+                .param("to", "2026-01-01T00:00:00Z"))
+        .andExpect(status().isUnprocessableEntity())
+        .andExpect(jsonPath("$.message").value("가격 이력은 한 번에 최대 731일까지 조회할 수 있습니다."));
+  }
+
+  @Test
   void summaryRequiresModelAndRejectsRegionMixing() throws Exception {
     mvc.perform(get("/api/v1/market/summaries")).andExpect(status().isUnprocessableEntity());
     mvc.perform(get("/api/v1/market/summaries?modelId=1&comparisonType=EXCLUDING_REGION"))

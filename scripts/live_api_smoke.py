@@ -45,6 +45,21 @@ for name in ('H100', 'B200'):
     else:
         point = next(p for s in history['result']['series'] for p in s['points'] if p['normalizationId'] and p['effectiveUsdGpuHour'] is not None)
 
+history_filters = {**params, 'modelId': models['H100'], 'limit': 2}
+history_path = '/api/v1/market/price-histories?'
+status, history = request(history_path + urlencode(history_filters))
+first_history = history['result']
+check(status == 200 and len(first_history['series']) == 2 and first_history['nextCursor'],
+      '가격 이력 첫 페이지')
+status, history = request(history_path + urlencode({**history_filters, 'cursor': first_history['nextCursor']}))
+second_history = history['result']
+check(status == 200 and len(second_history['series']) == 2
+      and int(second_history['series'][0]['offerId']) > int(first_history['series'][-1]['offerId'])
+      and all(p['offerId'] == s['offerId'] and 'evidenceIds' in p
+              for s in second_history['series'] for p in s['points']), '이력 다음 페이지의 오퍼 순서와 근거')
+status, history = request(history_path + urlencode({**history_filters, 'from': (now - timedelta(days=732)).isoformat()}))
+check(status == 422 and not history['isSuccess'], '가격 이력 기간 상한 거부')
+
 observation, normalization = point['observationId'], point['normalizationId']
 status, detail = request('/api/v1/market/observations/' + observation + '?' + urlencode({'normalizationId': normalization}))
 check(status == 200 and detail['isSuccess'] and str(detail['result']['observationId']) == observation, '관측 상세 조회')

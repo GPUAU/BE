@@ -5,6 +5,7 @@ import com.gpumarket.global.api.InvalidRequestException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -12,22 +13,31 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.springframework.jdbc.core.JdbcTemplate;
+import java.util.Objects;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 public class MarketHistoryController {
-  private final JdbcTemplate jdbc;
+  private static final int MAX_DAYS = 731;
+  private static final int MAX_POINTS = 12_000;
+  private static final int MAX_PAGE_SIZE = 100;
+  private final NamedParameterJdbcTemplate jdbc;
 
-  public MarketHistoryController(JdbcTemplate jdbc) {
+  public MarketHistoryController(NamedParameterJdbcTemplate jdbc) {
     this.jdbc = jdbc;
   }
 
   @Operation(
       summary = "GPU 가격 이력 조회",
-      description = "오퍼별 관측 이력. 현재 modelId, from, to만 지원합니다. from 포함, to 미포함이며 UTC 시각을 입력합니다.",
+      description =
+          "오퍼별 관측 이력. from 포함, to 미포함입니다. 최대 731일·12,000개 관측을 조회하며 limit과 cursor로 오퍼 단위 페이지를 조회할 수"
+              + " 있습니다.",
       parameters = {
         @Parameter(
             name = "modelId",
@@ -46,14 +56,20 @@ public class MarketHistoryController {
             in = ParameterIn.QUERY,
             required = true,
             description = "조회 종료 시각 (미포함)",
-            example = "2026-11-18T00:00:00Z")
+            example = "2026-11-18T00:00:00Z"),
+        @Parameter(name = "limit", in = ParameterIn.QUERY, description = "페이지당 오퍼 수 (1~100)"),
+        @Parameter(name = "cursor", in = ParameterIn.QUERY, description = "이전 응답의 nextCursor")
       })
   @GetMapping("/api/v1/market/price-histories")
   public ApiResponse<Map<String, Object>> history(
       @Parameter(hidden = true) @RequestParam Map<String, String> params) {
-    if (!params.keySet().stream().allMatch(List.of("modelId", "from", "to")::contains))
-      throw new InvalidRequestException("현재 modelId, from, to만 지원합니다.");
-    String model = params.get("modelId"), from = params.get("from"), to = params.get("to");
+    if (!params.keySet().stream()
+        .allMatch(List.of("modelId", "from", "to", "limit", "cursor")::contains)) {
+      throw new InvalidRequestException("지원하지 않는 가격 이력 조회 조건입니다.");
+    }
+    String model = params.get("modelId");
+    String from = params.get("from");
+    String to = params.get("to");
 
     if (model == null || from == null || to == null) {
       throw new InvalidRequestException("모델과 기간이 필요합니다.");
@@ -75,38 +91,62 @@ public class MarketHistoryController {
       throw new InvalidRequestException("기간 또는 모델이 올바르지 않습니다.");
     }
 
-    var rows =
-        jdbc.queryForList(
-            "SELECT o.observation_id, o.offer_id, o.check_id, o.collected_at, o.effective_from,"
-                + " o.price_certainty, f.product_id, f.contract_type, f.commitment_months,"
-                + " f.payment_option, p.gpu_count, p.system_type, p.service_option, p.country_code,"
-                + " p.region_code, p.provider_id, v.provider_name, v.provider_type, g.gpu_model_id,"
-                + " g.model_name, n.normalization_id, n.effective_usd_gpu_hour, n.result_status,"
-                + " n.reason AS normalization_reason, n.rule_version FROM price_observation o JOIN"
-                + " offer f ON f.offer_id=o.offer_id JOIN product p ON p.product_id=f.product_id"
-                + " JOIN provider v ON v.provider_id=p.provider_id JOIN gpu_model g ON"
-                + " g.gpu_model_id=p.gpu_model_id LEFT JOIN (SELECT pn.*, nr.rule_version, count(*)"
-                + " OVER (PARTITION BY pn.observation_id) AS versions FROM price_normalization pn"
-                + " JOIN normalization_rule nr ON nr.rule_id=pn.rule_id) n ON"
-                + " n.observation_id=o.observation_id AND n.versions=1 WHERE g.gpu_model_id=? AND"
-                + " o.collected_at>=? AND o.collected_at<? ORDER BY o.offer_id, o.collected_at,"
-                + " o.observation_id",
-            modelId,
-            start,
-            end);
+    if (Duration.between(start, end).compareTo(Duration.ofDays(MAX_DAYS)) > 0) {
+      throw new InvalidRequestException("가격 이력은 한 번에 최대 731일까지 조회할 수 있습니다.");
+    }
 
-    // Load evidence once per matching collection check instead of once per observation.
-    // Multiple observations can share the same check, including checks without evidence.
+    var query = new LinkedHashMap<String, Object>();
+    query.put("modelId", modelId);
+    query.put("start", start);
+    query.put("end", end);
+    query.put("pointLimit", MAX_POINTS + 1);
+    Integer limit = params.containsKey("limit") ? historyLimit(params.get("limit")) : null;
+    if (params.containsKey("cursor") && limit == null) {
+      throw new InvalidRequestException("가격 이력 cursor를 사용하려면 limit이 필요합니다.");
+    }
+
+    String nextCursor = null;
+    List<Map<String, Object>> rows;
+    if (limit == null) {
+      rows = historyRows(query, "");
+    } else {
+      query.put("afterOfferId", historyCursor(params.get("cursor")));
+      query.put("seriesLimit", limit + 1);
+      var page =
+          jdbc.queryForList(
+              """
+              SELECT f.offer_id FROM offer f JOIN product p ON p.product_id = f.product_id
+              WHERE p.gpu_model_id = :modelId AND f.offer_id > :afterOfferId
+                AND EXISTS (SELECT 1 FROM price_observation o WHERE o.offer_id = f.offer_id
+                            AND o.collected_at >= :start AND o.collected_at < :end)
+              ORDER BY f.offer_id LIMIT :seriesLimit
+              """,
+              query,
+              Long.class);
+      var offerIds = page.subList(0, Math.min(limit, page.size()));
+      if (page.size() > limit) {
+        nextCursor = offerIds.get(offerIds.size() - 1).toString();
+      }
+      query.put("offerIds", offerIds);
+      rows = offerIds.isEmpty() ? List.of() : historyRows(query, "AND o.offer_id IN (:offerIds)");
+    }
+
+    if (rows.size() > MAX_POINTS) {
+      throw new InvalidRequestException("가격 이력이 12,000개를 초과했습니다. 조회 기간을 줄이거나 오퍼 페이지 크기를 줄여 주세요.");
+    }
+
+    // Read evidence only for the observations selected for this response.
+    var checkIds =
+        rows.stream().map(row -> row.get("check_id")).filter(Objects::nonNull).distinct().toList();
     var evidenceRows =
-        jdbc.queryForList(
-            "SELECT e.check_id, e.evidence_id, e.source_id FROM source_evidence e JOIN"
-                + " (SELECT DISTINCT o.check_id FROM price_observation o JOIN offer f ON"
-                + " f.offer_id=o.offer_id JOIN product p ON p.product_id=f.product_id WHERE"
-                + " p.gpu_model_id=? AND o.collected_at>=? AND o.collected_at<?) checks ON"
-                + " checks.check_id=e.check_id ORDER BY e.check_id, e.evidence_id",
-            modelId,
-            start,
-            end);
+        checkIds.isEmpty()
+            ? List.<Map<String, Object>>of()
+            : jdbc.queryForList(
+                """
+                SELECT check_id, evidence_id, source_id FROM source_evidence
+                WHERE check_id IN (:checkIds) ORDER BY check_id, evidence_id
+                """,
+                Map.of("checkIds", checkIds));
     Map<String, List<Map<String, Object>>> evidenceByCheck = new LinkedHashMap<>();
     for (var evidence : evidenceRows) {
       evidenceByCheck
@@ -181,8 +221,60 @@ public class MarketHistoryController {
     result.put("series", new ArrayList<>(series.values()));
     result.put("reason", series.isEmpty() ? "NO_HISTORY" : null);
     result.put("asOf", Instant.now());
-    result.put("nextCursor", null);
+    result.put("nextCursor", nextCursor);
     return ApiResponse.success(result);
+  }
+
+  private List<Map<String, Object>> historyRows(Map<String, Object> query, String offerFilter) {
+    return jdbc.queryForList(
+        """
+        SELECT o.observation_id, o.offer_id, o.check_id, o.collected_at, o.effective_from,
+               f.contract_type, f.commitment_months, f.payment_option, p.gpu_count, p.system_type,
+               p.service_option, p.country_code, p.region_code, p.provider_id, v.provider_name,
+               v.provider_type, g.model_name, n.normalization_id, n.effective_usd_gpu_hour,
+               n.result_status, n.reason AS normalization_reason, n.rule_version
+        FROM price_observation o JOIN offer f ON f.offer_id = o.offer_id
+        JOIN product p ON p.product_id = f.product_id
+        JOIN provider v ON v.provider_id = p.provider_id
+        JOIN gpu_model g ON g.gpu_model_id = p.gpu_model_id
+        LEFT JOIN LATERAL (
+          SELECT pn.*, nr.rule_version, count(*) OVER () AS versions
+          FROM price_normalization pn JOIN normalization_rule nr ON nr.rule_id = pn.rule_id
+          WHERE pn.observation_id = o.observation_id
+        ) n ON n.versions = 1
+        WHERE g.gpu_model_id = :modelId AND o.collected_at >= :start AND o.collected_at < :end
+        %s
+        ORDER BY o.offer_id, o.collected_at, o.observation_id LIMIT :pointLimit
+        """
+            .formatted(offerFilter),
+        query);
+  }
+
+  private static int historyLimit(String value) {
+    try {
+      int limit = Integer.parseInt(value);
+      if (limit > 0 && limit <= MAX_PAGE_SIZE) {
+        return limit;
+      }
+    } catch (NumberFormatException ignored) {
+      // Reject malformed and out-of-range values with the same response.
+    }
+    throw new InvalidRequestException("가격 이력 limit은 1~100 사이의 정수여야 합니다.");
+  }
+
+  private static long historyCursor(String value) {
+    if (value == null) {
+      return 0;
+    }
+    try {
+      long offerId = Long.parseLong(value);
+      if (offerId > 0) {
+        return offerId;
+      }
+    } catch (NumberFormatException ignored) {
+      // Reject malformed and out-of-range values with the same response.
+    }
+    throw new InvalidRequestException("가격 이력 cursor가 올바르지 않습니다.");
   }
 
   private static String camel(String s) {
