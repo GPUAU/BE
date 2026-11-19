@@ -21,6 +21,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -432,11 +433,13 @@ public class MarketOfferService {
         DISCLAIMER);
   }
 
-  public List<ComparableGroup> comparablePrices(Map<String, String> input) {
+  public List<ComparableGroup> comparablePrices(
+      Map<String, String> input, boolean requirePositive) {
     Instant asOf = Instant.now();
     var eligible =
         repository.offers(query(filters(input, true), asOf)).stream()
             .filter(row -> assess(row, asOf).reason() == null)
+            .filter(row -> !requirePositive || effectiveAmount(row).signum() > 0)
             .toList();
     var checkIds =
         eligible.stream().map(row -> id(row, "observation_check_id")).distinct().toList();
@@ -476,6 +479,7 @@ public class MarketOfferService {
                           row ->
                               new ComparableOffer(
                                   string(row.get("offer_id")),
+                                  id(row, "provider_id"),
                                   effectiveAmount(row),
                                   price(row, "effective_usd_gpu_hour", certainty(row), null),
                                   time(row, "collected_at"),
@@ -506,6 +510,7 @@ public class MarketOfferService {
 
   public record ComparableOffer(
       String offerId,
+      long providerId,
       BigDecimal amount,
       Map<String, Object> price,
       Instant collectedAt,
@@ -1155,6 +1160,18 @@ public class MarketOfferService {
       Map<Long, List<Map<String, Object>>> evidence,
       Map<Long, List<Map<String, Object>>> components) {}
 
+  public record PriceSummary(BigDecimal minimum, BigDecimal median, BigDecimal maximum) {
+    public static PriceSummary fromRepresentatives(Collection<BigDecimal> prices) {
+      var values = prices.stream().sorted().toList();
+      int middle = values.size() / 2;
+      var median = values.get(middle);
+      if (values.size() % 2 == 0) {
+        median = median.add(values.get(middle - 1)).divide(BigDecimal.valueOf(2));
+      }
+      return new PriceSummary(values.get(0), median, values.get(values.size() - 1));
+    }
+  }
+
   private static class Group {
     private final Map<Long, BigDecimal> providers = new HashMap<>();
     private final Set<Long> products = new HashSet<>();
@@ -1171,14 +1188,11 @@ public class MarketOfferService {
 
     Map<String, Object> response(
         Map<String, Object> key, Instant asOf, LatestExchangeRateResponseDto rate) {
-      var values = providers.values().stream().sorted().toList();
-      int size = values.size();
-      var min = values.get(0);
-      var max = values.get(size - 1);
-      var median =
-          size % 2 == 1
-              ? values.get(size / 2)
-              : values.get(size / 2 - 1).add(values.get(size / 2)).divide(BigDecimal.valueOf(2));
+      int size = providers.size();
+      var summary = PriceSummary.fromRepresentatives(providers.values());
+      var min = summary.minimum();
+      var median = summary.median();
+      var max = summary.maximum();
       return map(
           "groupKey",
           key,
