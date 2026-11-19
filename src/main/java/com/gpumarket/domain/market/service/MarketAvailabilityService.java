@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -58,7 +59,7 @@ public class MarketAvailabilityService {
 
     var fetched = repository.find(filters);
     var rows = fetched.subList(0, Math.min(fetched.size(), request.limit()));
-    var related = MarketOfferService.related(offers, rows);
+    var related = evidenceAt(MarketOfferService.related(offers, rows), cursor.asOf());
     var items = rows.stream().map(row -> item(row, related, cursor.asOf())).toList();
     String next =
         fetched.size() > request.limit()
@@ -96,26 +97,51 @@ public class MarketAvailabilityService {
         new DisclosureDto(
             disclosure,
             time(row, "disclosure_checked_at"),
-            checkEvidence(row, related, "disclosure_check_id", asOf)),
+            checkEvidence(row, related, "disclosure_check_id")),
         new ProcessingCheckDto(processing, time(row, "checked_at"), string(row, "check_reason")),
         string(row, "scope_description"),
-        checkEvidence(row, related, "check_id", asOf),
+        checkEvidence(row, related, "check_id"),
         time(row, "first_price_observed_at"),
         MarketOfferService.observation(row, related, null),
         new FreshnessDto(
             MarketOfferService.freshness(lastSuccess, asOf), lastSuccess, asOf, "48h-v1"));
   }
 
-  private static List<Map<String, Object>> checkEvidence(
-      Map<String, Object> row, MarketOfferService.Related related, String check, Instant asOf) {
-    if (!(row.get(check) instanceof Number id)) {
-      return List.of();
+  private static MarketOfferService.Related evidenceAt(
+      MarketOfferService.Related related, Instant asOf) {
+    var evidence =
+        related.evidence().entrySet().stream()
+            .collect(
+                Collectors.toMap(
+                    Map.Entry::getKey,
+                    entry ->
+                        entry.getValue().stream()
+                            .filter(item -> !isAfter(item, "capturedAt", asOf))
+                            .map(item -> evidenceVerificationAt(item, asOf))
+                            .toList()));
+    return new MarketOfferService.Related(evidence, related.components());
+  }
+
+  private static Map<String, Object> evidenceVerificationAt(
+      Map<String, Object> item, Instant asOf) {
+    if (!isAfter(item, "verifiedAt", asOf)) {
+      return item;
     }
-    return related.evidence().getOrDefault(id.longValue(), List.of()).stream()
-        .filter(
-            item ->
-                !(item.get("capturedAt") instanceof Instant captured) || !captured.isAfter(asOf))
-        .toList();
+    var original = new LinkedHashMap<>(item);
+    original.put("primaryVerified", null);
+    original.put("verifiedAt", null);
+    return original;
+  }
+
+  private static boolean isAfter(Map<String, Object> item, String field, Instant asOf) {
+    return item.get(field) instanceof Instant timestamp && timestamp.isAfter(asOf);
+  }
+
+  private static List<Map<String, Object>> checkEvidence(
+      Map<String, Object> row, MarketOfferService.Related related, String check) {
+    return row.get(check) instanceof Number id
+        ? related.evidence().getOrDefault(id.longValue(), List.of())
+        : List.of();
   }
 
   private static String string(Map<String, Object> row, String field) {

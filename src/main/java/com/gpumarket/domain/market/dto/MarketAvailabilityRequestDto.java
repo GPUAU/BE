@@ -5,7 +5,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.server.ResponseStatusException;
 
 public record MarketAvailabilityRequestDto(
     long modelId,
@@ -20,10 +22,14 @@ public record MarketAvailabilityRequestDto(
     if (!fields.containsAll(input.keySet())
         || input.entrySet().stream()
             .anyMatch(e -> !e.getKey().equals("providerIds") && e.getValue().size() != 1)) {
-      throw new InvalidRequestException("지원하지 않거나 중복된 가격 확보 상태 조회 조건입니다.");
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않거나 중복된 가격 확보 상태 조회 조건입니다.");
+    }
+    String model = input.getFirst("modelId");
+    if (model == null) {
+      throw new InvalidRequestException("모델 ID가 필요합니다.");
     }
     try {
-      long modelId = Long.parseLong(input.getFirst("modelId"));
+      long modelId = Long.parseLong(model);
       String sizeText = input.getFirst("limit");
       int size = sizeText == null ? 50 : Integer.parseInt(sizeText);
       var providers =
@@ -48,7 +54,8 @@ public record MarketAvailabilityRequestDto(
       return new MarketAvailabilityRequestDto(
           modelId, providers, country, contract, size, input.getFirst("cursor"));
     } catch (NumberFormatException e) {
-      throw new InvalidRequestException("양의 모델 ID가 필요하며 사업자 ID와 페이지 크기는 정수여야 합니다.");
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "모델 ID, 사업자 ID 및 페이지 크기는 정수여야 합니다.");
     }
   }
 
