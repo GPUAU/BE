@@ -34,7 +34,10 @@ public class LocalSecurityConfig {
                         "/api/v1/operations/alerts",
                         "/api/v1/operations/collection-runs")
                     .permitAll()
-                    .requestMatchers(HttpMethod.POST, "/api/v1/exchange-rate-simulations")
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/v1/exchange-rate-simulations",
+                        "/api/v1/agent-messages")
                     .permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/cost-simulations")
                     .permitAll()

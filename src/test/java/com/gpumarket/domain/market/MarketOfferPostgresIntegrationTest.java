@@ -2,7 +2,9 @@ package com.gpumarket.domain.market;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
+import com.gpumarket.domain.market.service.MarketOfferService;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -95,6 +97,66 @@ class MarketOfferPostgresIntegrationTest {
           .containsEntry("processing_status", "success")
           .containsEntry("disclosure_status", "public")
           .containsEntry("disclosure_check_id", 19L);
+    } finally {
+      ds.destroy();
+    }
+  }
+
+  @Test
+  void findsPublicPriceAfterIneligibleOffersAndRejectsNonPriceEvidence() {
+    var ds =
+        new SingleConnectionDataSource(
+            System.getenv("TEST_POSTGRES_URL"), System.getenv("TEST_POSTGRES_USER"), "", true);
+    try {
+      var jdbc = new JdbcTemplate(ds);
+      createTables(jdbc);
+      jdbc.execute(
+          """
+ALTER TABLE source_evidence
+  ADD COLUMN evidence_id bigint GENERATED ALWAYS AS IDENTITY,
+  ADD COLUMN source_url text,
+  ADD COLUMN captured_at timestamptz,
+  ADD COLUMN verified_at timestamptz,
+  ADD COLUMN source_version text;
+CREATE TEMP TABLE data_source(source_id bigint, source_name text, source_type text);
+CREATE TEMP TABLE price_component(component_id bigint, observation_id bigint);
+INSERT INTO data_source VALUES (1, 'AWS Pricing', 'official_api'),
+  (2, 'Marketplace', 'aggregator');
+INSERT INTO provider VALUES (1, 'AWS', 'hyperscaler');
+INSERT INTO gpu_model VALUES (1, 'B300', 'Blackwell');
+INSERT INTO product (product_id, provider_id, gpu_model_id, region_code)
+  VALUES (1, 1, 1, 'us-east-1');
+INSERT INTO offer
+  SELECT id, 1, 'on_demand', 'On-demand' FROM generate_series(1, 105) AS id;
+INSERT INTO collection_target VALUES (1, 1, 1, 1, 'us-east-1', 'on_demand');
+INSERT INTO collection_check
+  SELECT id, 1, id, now() - interval '1 hour', 'success',
+    CASE WHEN id = 1 THEN 'login_required' ELSE 'public' END, NULL, 'offer', true
+  FROM generate_series(1, 105) AS id;
+INSERT INTO price_observation
+  SELECT id, id, id, now() - interval '1 hour', NULL, 'firm', '$8'
+  FROM generate_series(1, 105) AS id;
+INSERT INTO normalization_rule VALUES (1, 'v1', 730, 'pricing', 'decimal');
+INSERT INTO price_normalization
+  SELECT id, id, 1, 8, 8, 'success', NULL, NULL
+  FROM generate_series(1, 105) AS id;
+INSERT INTO source_evidence
+  (check_id, source_id, evidence_role, primary_verified, source_url, captured_at, verified_at)
+VALUES
+  (1, 1, 'official', false, 'https://example.org/private', now(), NULL),
+  (102, 1, 'spec', false, 'https://example.org/spec', now(), NULL),
+  (103, 1, 'official', false, 'https://example.org/future', now()+interval '1 hour', NULL),
+  (104, 2, 'aggregator', true, 'https://example.org/list', now(), now()+interval '1 hour'),
+  (105, 1, 'official', false, 'https://example.org/price', now(), NULL);
+""");
+      var repository = new MarketOfferRepository(new NamedParameterJdbcTemplate(jdbc));
+      var prices =
+          new MarketOfferService(repository, null)
+              .publicPrices(Map.of("modelId", "1", "contractType", "ON_DEMAND"));
+      assertThat(prices.items()).extracting(PublicPriceDto::offerId).containsExactly("105");
+      assertThat(prices.items().get(0).sources().get(0))
+          .containsEntry("sourceUrl", "https://example.org/price");
+      assertThat(prices.limited()).isFalse();
     } finally {
       ds.destroy();
     }

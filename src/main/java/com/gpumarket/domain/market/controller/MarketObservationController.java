@@ -5,6 +5,9 @@ import com.gpumarket.global.api.ApiResponse;
 import com.gpumarket.global.api.InvalidRequestException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -59,8 +62,8 @@ public class MarketObservationController {
     result.put("observationId", Long.toString(observationId));
     result.put("offerId", row.get("offer_id").toString());
     result.put("productId", row.get("product_id").toString());
-    result.put("collectedAt", row.get("collected_at"));
-    result.put("effectiveFrom", row.get("effective_from"));
+    result.put("collectedAt", instant(row.get("collected_at")));
+    result.put("effectiveFrom", instant(row.get("effective_from")));
     result.put("priceCertainty", kind);
     result.put("rawPriceText", row.get("raw_price_text"));
     result.put(
@@ -115,11 +118,11 @@ public class MarketObservationController {
                         "excerpt",
                         null,
                         "capturedAt",
-                        e.get("captured_at"),
+                        instant(e.get("captured_at")),
                         "primaryVerified",
                         e.get("primary_verified"),
                         "verifiedAt",
-                        e.get("verified_at")))
+                        instant(e.get("verified_at"))))
             .toList());
     result.put(
         "correction",
@@ -153,7 +156,7 @@ public class MarketObservationController {
                 "precisionPolicy",
                 selected.get("precision_policy"),
                 "calculationInputs",
-                selected.get("calculation_inputs").toString()));
+                str(selected.get("calculation_inputs"))));
     return ApiResponse.success(result);
   }
 
@@ -185,6 +188,13 @@ public class MarketObservationController {
         null,
         "krw",
         null);
+  }
+
+  private static Instant instant(Object value) {
+    if (value instanceof Timestamp timestamp) {
+      return timestamp.toInstant();
+    }
+    return value instanceof OffsetDateTime offset ? offset.toInstant() : (Instant) value;
   }
 
   private static String id(Object v) {
