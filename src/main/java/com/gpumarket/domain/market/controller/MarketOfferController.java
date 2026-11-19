@@ -1,9 +1,12 @@
 package com.gpumarket.domain.market.controller;
 
+import com.gpumarket.domain.market.dto.ContractComparisonResponseDto;
 import com.gpumarket.domain.market.service.MarketOfferService;
 import com.gpumarket.global.api.ApiResponse;
 import com.gpumarket.global.api.InvalidRequestException;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.util.MultiValueMap;
@@ -43,6 +46,17 @@ public class MarketOfferController {
   public ApiResponse<Map<String, Object>> summary(
       @RequestParam MultiValueMap<String, String> params) {
     return ApiResponse.success(service.summary(query(params)));
+  }
+
+  @Operation(
+      summary = "같은 상품의 공개 계약 가격 비교",
+      parameters =
+          @Parameter(name = "currency", in = ParameterIn.QUERY, description = "USD 또는 KRW"))
+  @GetMapping("/products/{productId}/contracts")
+  public ApiResponse<ContractComparisonResponseDto> contracts(
+      @PathVariable long productId,
+      @Parameter(hidden = true) @RequestParam MultiValueMap<String, String> params) {
+    return ApiResponse.success(service.contracts(productId, query(params)));
   }
 
   private static Map<String, String> query(MultiValueMap<String, String> params) {

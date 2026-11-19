@@ -111,6 +111,7 @@ WHERE true
     var sql = new StringBuilder(SELECT);
     // Only these fixed fragments can enter the SQL. All filter values are bound parameters.
     append(sql, parameters, "offerId", "f.offer_id = :offerId");
+    append(sql, parameters, "productId", "p.product_id = :productId");
     append(sql, parameters, "afterId", "f.offer_id > :afterId");
     append(sql, parameters, "modelId", "g.gpu_model_id = :modelId");
     append(sql, parameters, "generation", "lower(g.generation) = lower(:generation)");
@@ -147,6 +148,14 @@ WHERE true
       sql.append(" LIMIT :pageSize");
     }
     return jdbc.queryForList(sql.toString(), parameters);
+  }
+
+  public boolean productExists(long productId) {
+    return Boolean.TRUE.equals(
+        jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM product WHERE product_id = :productId)",
+            Map.of("productId", productId),
+            Boolean.class));
   }
 
   public List<Map<String, Object>> evidence(List<Long> checkIds) {
