@@ -1,0 +1,850 @@
+package com.gpumarket.domain.market.service;
+
+import com.gpumarket.domain.exchange.dto.LatestExchangeRateResponseDto;
+import com.gpumarket.domain.exchange.service.ExchangeService;
+import com.gpumarket.domain.market.repository.MarketOfferRepository;
+import com.gpumarket.global.api.InvalidRequestException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+@Service
+@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+public class MarketOfferService {
+  private static final String DISCLAIMER = "공개 관측 가격이며 실제 거래가와 다를 수 있습니다.";
+  private static final int FRESH_HOURS = 48;
+  private static final List<String> TEXT_FILTERS =
+      List.of(
+          "generation",
+          "countryCode",
+          "regionCode",
+          "systemType",
+          "serviceOption",
+          "contractType",
+          "contractProductType",
+          "intraNodeInterconnect",
+          "paymentOption");
+  private final MarketOfferRepository repository;
+  private final ExchangeService exchange;
+
+  public MarketOfferService(MarketOfferRepository repository, ExchangeService exchange) {
+    this.repository = repository;
+    this.exchange = exchange;
+  }
+
+  public Map<String, Object> list(Map<String, String> input) {
+    var filters = filters(input, false);
+    int limit = input.containsKey("limit") ? integer(input.get("limit"), "limit", 1, 100) : 50;
+    boolean includeStale = Boolean.TRUE.equals(filters.applied().get("includeStale"));
+    var cursor = cursor(input.get("cursor"), filters.applied());
+    var params = query(filters, cursor.asOf());
+    if (!includeStale) {
+      params.put("cutoff", utc(cursor.asOf().minus(FRESH_HOURS, ChronoUnit.HOURS)));
+    }
+    params.put("afterId", cursor.afterId());
+    params.put("pageSize", limit + 1);
+    var fetched = repository.offers(params);
+    var rows = fetched.subList(0, Math.min(limit, fetched.size()));
+    var rate = rate(filters.currency());
+    var related = related(rows);
+    var next =
+        fetched.size() > limit
+            ? encodeCursor(
+                new Cursor(cursor.asOf(), number(rows.get(rows.size() - 1), "offer_id")),
+                filters.applied())
+            : null;
+    return map(
+        "appliedFilters",
+        filters.applied(),
+        "items",
+        rows.stream().map(row -> offer(row, cursor.asOf(), related, rate)).toList(),
+        "asOf",
+        cursor.asOf(),
+        "nextCursor",
+        next,
+        "disclaimer",
+        DISCLAIMER);
+  }
+
+  public Map<String, Object> detail(long offerId, Map<String, String> input) {
+    if (offerId < 1 || !Set.of("currency").containsAll(input.keySet())) {
+      throw invalid("양의 오퍼 ID와 currency만 사용할 수 있습니다.");
+    }
+    String currency = currency(input);
+    Instant now = Instant.now();
+    var rows = repository.offers(Map.of("offerId", offerId, "asOf", utc(now)));
+    if (rows.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "오퍼가 없습니다.");
+    }
+    var row = rows.get(0);
+    var rate = rate(currency);
+    return map(
+        "offer",
+        offer(row, now, related(rows), rate),
+        "specEvidence",
+        repository.specEvidence(number(row, "product_id")).stream()
+            .map(e -> map("attributeName", e.get("attribute_name"), "evidence", evidence(e)))
+            .toList(),
+        "normalizationExplanation",
+        row.get("normalization_id") == null
+            ? null
+            : map(
+                "formulaDescription",
+                row.get("formula_description"),
+                "precisionPolicy",
+                row.get("precision_policy"),
+                "monthlyHours",
+                row.get("monthly_hours"),
+                "ruleVersion",
+                row.get("rule_version"),
+                "calculationInputs",
+                string(row.get("calculation_inputs"))),
+        "exchangeRate",
+        rate != null && rate.rate() != null ? rate : null);
+  }
+
+  public Map<String, Object> summary(Map<String, String> input) {
+    var filters = filters(input, true);
+    Instant asOf = Instant.now();
+    var groups = new LinkedHashMap<Map<String, Object>, Group>();
+    var excluded =
+        new LinkedHashMap<>(
+            Map.of(
+                "staleOffers",
+                0,
+                "notFoundOffers",
+                0,
+                "nonExactOffers",
+                0,
+                "incomparableOffers",
+                0,
+                "missingPriceOffers",
+                0,
+                "unavailableNormalizationOffers",
+                0));
+
+    for (var row : repository.offers(query(filters, asOf))) {
+      var decision = assess(row, asOf);
+      if (decision.reason() != null) {
+        excluded.merge(decision.reason(), 1, Integer::sum);
+        continue;
+      }
+      groups.computeIfAbsent(decision.key(), key -> new Group()).add(row);
+    }
+
+    var rate = rate(filters.currency());
+    return map(
+        "appliedFilters",
+        filters.applied(),
+        "groups",
+        groups.entrySet().stream().map(e -> e.getValue().response(e.getKey(), asOf, rate)).toList(),
+        "excludedSummary",
+        excluded,
+        "asOf",
+        asOf,
+        "rules",
+        map(
+            "comparisonVersion",
+            "same-region-config-v1",
+            "aggregationVersion",
+            "provider-lowest-v1",
+            "freshnessHours",
+            FRESH_HOURS),
+        "disclaimer",
+        DISCLAIMER);
+  }
+
+  private static Decision assess(Map<String, Object> row, Instant asOf) {
+    var key = groupKey(row);
+    Instant confirmedAt = time(row, "confirmed_at");
+    Instant checkedAt = time(row, "disclosure_checked_at");
+    boolean latest = checkedAt != null && (confirmedAt == null || !checkedAt.isBefore(confirmedAt));
+    if (latest
+        && ("not_found".equals(row.get("disclosure_processing_status"))
+            || Set.of("not_disclosed", "login_required", "contact_sales")
+                .contains(stringOrEmpty(row.get("disclosure_status"))))) {
+      return new Decision(key, "notFoundOffers");
+    }
+    if (row.get("observation_id") == null) {
+      return new Decision(key, "missingPriceOffers");
+    }
+    if (confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS))) {
+      return new Decision(key, "staleOffers");
+    }
+    if (!"firm".equals(row.get("price_certainty"))) {
+      return new Decision(key, "nonExactOffers");
+    }
+    if (!"success".equals(row.get("result_status")) || row.get("effective_usd_gpu_hour") == null) {
+      return new Decision(key, "unavailableNormalizationOffers");
+    }
+    return new Decision(key, key == null ? "incomparableOffers" : null);
+  }
+
+  private static Map<String, Object> groupKey(Map<String, Object> row) {
+    for (String field :
+        List.of(
+            "provider_type",
+            "country_code",
+            "region_code",
+            "system_type",
+            "service_option",
+            "gpu_count",
+            "contract_type",
+            "contract_product_type",
+            "intra_node_interconnect")) {
+      String value = stringOrEmpty(row.get(field));
+      if (value.isBlank()
+          || Set.of("unknown", "unconfirmed").contains(value.toLowerCase(Locale.ROOT))) {
+        return null;
+      }
+    }
+    boolean general = "GENERAL_CLOUD".equals(row.get("provider_type"));
+    boolean commitment = "commitment".equals(row.get("contract_type"));
+    if (!"confirmed".equals(row.get("interconnect_status"))
+        || (general && (row.get("vcpu_count") == null || row.get("ram_gb") == null))
+        || (commitment
+            && (row.get("commitment_months") == null || row.get("payment_option") == null))
+        || (row.get("minimum_quantity") != null && !hasText(row.get("minimum_quantity_unit")))) {
+      return null;
+    }
+    return map(
+        "modelId",
+        string(row.get("gpu_model_id")),
+        "providerType",
+        row.get("provider_type"),
+        "countryCode",
+        upper(row.get("country_code")),
+        "regionCode",
+        row.get("region_code"),
+        "systemType",
+        upper(row.get("system_type")),
+        "serviceOption",
+        upper(row.get("service_option")),
+        "gpuCount",
+        row.get("gpu_count"),
+        "contractType",
+        upper(row.get("contract_type")),
+        "contractProductType",
+        upper(row.get("contract_product_type")),
+        "commitmentMonths",
+        row.get("commitment_months"),
+        "paymentOption",
+        payment(row),
+        "minimumQuantity",
+        decimalKey(row.get("minimum_quantity")),
+        "minimumQuantityUnit",
+        upper(row.get("minimum_quantity_unit")),
+        "intraNodeInterconnect",
+        row.get("intra_node_interconnect"),
+        "vcpuCount",
+        decimalKey(row.get("vcpu_count")),
+        "ramGb",
+        decimalKey(row.get("ram_gb")),
+        "vramGbPerGpu",
+        decimalKey(row.get("vram_gb_per_gpu")),
+        "specScope",
+        row.get("spec_scope"),
+        "storageDescription",
+        row.get("storage_description"),
+        "interNodeNetwork",
+        row.get("inter_node_network"));
+  }
+
+  private Map<String, Object> offer(
+      Map<String, Object> row, Instant asOf, Related related, LatestExchangeRateResponseDto rate) {
+    var decision = assess(row, asOf);
+    Instant confirmedAt = time(row, "confirmed_at");
+    String freshness =
+        confirmedAt == null
+            ? "UNKNOWN"
+            : confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)) ? "STALE" : "CURRENT";
+    String certainty =
+        switch (stringOrEmpty(row.get("price_certainty"))) {
+          case "firm" -> "EXACT";
+          case "starting_from" -> "FROM";
+          case "range" -> "RANGE";
+          case "estimate" -> "SCENARIO";
+          default -> "UNKNOWN";
+        };
+    var observation =
+        row.get("observation_id") == null
+            ? null
+            : map(
+                "observationId",
+                string(row.get("observation_id")),
+                "collectedAt",
+                time(row, "collected_at"),
+                "effectiveFrom",
+                time(row, "effective_from"),
+                "priceCertainty",
+                certainty,
+                "rawPriceText",
+                row.get("raw_price_text"),
+                "components",
+                related.components().getOrDefault(id(row, "observation_id"), List.of()),
+                "nominal",
+                price(row, "nominal_usd_gpu_hour", certainty, rate),
+                "effective",
+                price(row, "effective_usd_gpu_hour", certainty, rate),
+                "evidence",
+                related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()));
+    return map(
+        "offerId",
+        string(row.get("offer_id")),
+        "productId",
+        string(row.get("product_id")),
+        "providerId",
+        string(row.get("provider_id")),
+        "providerName",
+        row.get("provider_name"),
+        "providerType",
+        row.get("provider_type"),
+        "modelId",
+        string(row.get("gpu_model_id")),
+        "modelName",
+        row.get("model_name"),
+        "product",
+        map(
+            "sku",
+            row.get("sku"),
+            "originalProductName",
+            row.get("original_product_name"),
+            "originalModelName",
+            row.get("original_model_name"),
+            "systemType",
+            upper(row.get("system_type")),
+            "serviceOption",
+            upper(row.get("service_option")),
+            "gpuCount",
+            row.get("gpu_count"),
+            "vcpuCount",
+            row.get("vcpu_count"),
+            "ramGb",
+            row.get("ram_gb"),
+            "vramGbPerGpu",
+            row.get("vram_gb_per_gpu"),
+            "specScope",
+            row.get("spec_scope"),
+            "storageDescription",
+            row.get("storage_description"),
+            "intraNodeInterconnect",
+            row.get("intra_node_interconnect"),
+            "interconnectStatus",
+            upper(row.get("interconnect_status")),
+            "interNodeNetwork",
+            row.get("inter_node_network"),
+            "configurationVersion",
+            row.get("configuration_version"),
+            "countryCode",
+            row.get("country_code"),
+            "regionCode",
+            row.get("region_code")),
+        "contract",
+        map(
+            "type",
+            upper(row.get("contract_type")),
+            "productType",
+            row.get("contract_product_type"),
+            "months",
+            row.get("commitment_months"),
+            "paymentOption",
+            payment(row),
+            "minimumQuantity",
+            string(row.get("minimum_quantity")),
+            "minimumQuantityUnit",
+            row.get("minimum_quantity_unit")),
+        "lastSuccessfulObservation",
+        observation,
+        "latestDisclosure",
+        row.get("disclosure_check_id") == null
+            ? null
+            : map(
+                "status",
+                upper(row.get("disclosure_status")),
+                "verifiedAt",
+                time(row, "disclosure_checked_at"),
+                "evidence",
+                related.evidence().getOrDefault(id(row, "disclosure_check_id"), List.of())),
+        "latestCheck",
+        row.get("check_id") == null
+            ? null
+            : map(
+                "processingStatus",
+                upper(row.get("processing_status")),
+                "checkedAt",
+                time(row, "checked_at"),
+                "reason",
+                row.get("reason")),
+        "freshness",
+        map(
+            "status",
+            freshness,
+            "lastSuccessAt",
+            confirmedAt,
+            "evaluatedAt",
+            asOf,
+            "ruleVersion",
+            "48h-v1"),
+        "comparison",
+        map(
+            "type",
+            "SAME_CONDITION",
+            "groupKey",
+            decision.key(),
+            "eligibleForAggregate",
+            decision.reason() == null,
+            "referenceOfferId",
+            null,
+            "differences",
+            List.of(),
+            "excludedReasons",
+            decision.reason() == null ? List.of() : List.of(decision.reason())));
+  }
+
+  private Related related(List<Map<String, Object>> rows) {
+    var checks = new HashSet<Long>();
+    var observations = new HashSet<Long>();
+    for (var row : rows) {
+      checks.add(id(row, "check_id"));
+      checks.add(id(row, "disclosure_check_id"));
+      checks.add(id(row, "observation_check_id"));
+      observations.add(id(row, "observation_id"));
+    }
+    checks.remove(null);
+    observations.remove(null);
+    var evidence = new HashMap<Long, List<Map<String, Object>>>();
+    for (var row : repository.evidence(List.copyOf(checks))) {
+      evidence
+          .computeIfAbsent(id(row, "check_id"), ignored -> new ArrayList<>())
+          .add(evidence(row));
+    }
+    var components = new HashMap<Long, List<Map<String, Object>>>();
+    for (var row : repository.components(List.copyOf(observations))) {
+      components
+          .computeIfAbsent(id(row, "observation_id"), ignored -> new ArrayList<>())
+          .add(
+              map(
+                  "componentId",
+                  string(row.get("component_id")),
+                  "type",
+                  upper(row.get("component_type")),
+                  "amount",
+                  string(row.get("amount")),
+                  "currency",
+                  row.get("currency"),
+                  "timeUnit",
+                  upper(row.get("time_unit")),
+                  "appliesTo",
+                  upper(row.get("applies_to")),
+                  "discountRate",
+                  string(row.get("discount_rate")),
+                  "rawValue",
+                  row.get("raw_value")));
+    }
+    return new Related(evidence, components);
+  }
+
+  private static Map<String, Object> evidence(Map<String, Object> row) {
+    return map(
+        "evidenceId",
+        string(row.get("evidence_id")),
+        "sourceId",
+        string(row.get("source_id")),
+        "role",
+        "official".equals(row.get("evidence_role")) ? "PRIMARY" : upper(row.get("evidence_role")),
+        "sourceName",
+        row.get("source_name"),
+        "sourceUrl",
+        row.get("source_url"),
+        "sourceVersion",
+        row.get("source_version"),
+        "excerpt",
+        row.get("excerpt"),
+        "capturedAt",
+        time(row, "captured_at"),
+        "primaryVerified",
+        row.get("primary_verified"),
+        "verifiedAt",
+        time(row, "verified_at"),
+        "collectionMethod",
+        null,
+        "collectionMethodUnavailableReason",
+        "수집 당시 방식이 근거에 기록되지 않았습니다.");
+  }
+
+  private static Map<String, Object> price(
+      Map<String, Object> row, String field, String certainty, LatestExchangeRateResponseDto rate) {
+    var value = "success".equals(row.get("result_status")) ? (BigDecimal) row.get(field) : null;
+    String reason =
+        value != null
+            ? null
+            : (row.get("normalization_reason") != null
+                ? string(row.get("normalization_reason"))
+                : "사용할 수 있는 단일 환산 결과가 없습니다.");
+    return map(
+        "normalizationId",
+        string(row.get("normalization_id")),
+        "amount",
+        decimal(value),
+        "kind",
+        certainty,
+        "status",
+        value != null ? "OK" : "UNAVAILABLE",
+        "reason",
+        reason,
+        "monthlyHours",
+        string(row.get("monthly_hours")),
+        "ruleVersion",
+        row.get("rule_version"),
+        "assumptions",
+        List.of(),
+        "baselineObservationId",
+        null,
+        "baselineNormalizationId",
+        null,
+        "krw",
+        rate == null ? null : krw(rate, "amount", value));
+  }
+
+  private static Map<String, Object> krw(LatestExchangeRateResponseDto rate, Object... amounts) {
+    var factor = rate.rate() == null ? null : new BigDecimal(rate.rate());
+    boolean available = factor != null && amounts[1] != null;
+    var result =
+        map(
+            "status",
+            available ? "OK" : "UNAVAILABLE",
+            "reason",
+            available ? null : factor == null ? rate.reason() : "환산할 USD 가격이 없습니다.",
+            "unit",
+            "KRW/GPU-hour",
+            "exchangeRateId",
+            rate.exchangeRateId(),
+            "krwPerUsd",
+            rate.rate(),
+            "referenceDate",
+            rate.referenceDate(),
+            "source",
+            rate.source(),
+            "selectionPolicyVersion",
+            rate.selectionPolicyVersion());
+    for (int i = 0; i < amounts.length; i += 2) {
+      result.put(
+          (String) amounts[i],
+          available
+              ? ((BigDecimal) amounts[i + 1])
+                  .multiply(factor)
+                  .setScale(6, RoundingMode.HALF_UP)
+                  .toPlainString()
+              : null);
+    }
+    return result;
+  }
+
+  private LatestExchangeRateResponseDto rate(String currency) {
+    return "KRW".equals(currency) ? exchange.latest() : null;
+  }
+
+  private static Filters filters(Map<String, String> input, boolean summary) {
+    var allowed = new HashSet<>(TEXT_FILTERS);
+    allowed.addAll(
+        Set.of(
+            "modelId",
+            "providerIds",
+            "providerType",
+            "gpuCount",
+            "commitmentMonths",
+            "currency",
+            "comparisonType"));
+    if (!summary) {
+      allowed.addAll(Set.of("includeStale", "limit", "cursor"));
+    }
+    if (!allowed.containsAll(input.keySet())) {
+      throw invalid("지원하지 않는 가격 조회 조건이 있습니다.");
+    }
+    if (summary && !input.containsKey("modelId")) {
+      throw invalid("시장 요약에는 modelId가 필요합니다.");
+    }
+    if (!"SAME_CONDITION".equals(input.getOrDefault("comparisonType", "SAME_CONDITION"))) {
+      throw invalid("현재 동일 리전의 SAME_CONDITION 비교만 지원합니다.");
+    }
+    var sql = new HashMap<String, Object>();
+    var applied = new TreeMap<String, Object>();
+    for (String key : TEXT_FILTERS) {
+      if (input.containsKey(key)) {
+        var value = input.get(key).strip();
+        if (value.isEmpty() || value.length() > 200) {
+          throw invalid(key + " 값이 유효하지 않습니다.");
+        }
+        applied.put(key, value);
+        sql.put(key, value);
+      }
+    }
+    if (input.containsKey("modelId")) {
+      long modelId = positive(input.get("modelId"), "modelId");
+      sql.put("modelId", modelId);
+      applied.put("modelId", Long.toString(modelId));
+    }
+    if (input.containsKey("providerIds")) {
+      var raw = input.get("providerIds").split(",", -1);
+      if (raw.length > 100) {
+        throw invalid("사업자 조회는 최대 100개까지 지원합니다.");
+      }
+      var ids =
+          Arrays.stream(raw)
+              .map(v -> positive(v.strip(), "providerIds"))
+              .distinct()
+              .sorted()
+              .toList();
+      sql.put("providerIds", ids);
+      applied.put("providerIds", ids.stream().map(String::valueOf).toList());
+    }
+    for (String key : List.of("gpuCount", "commitmentMonths")) {
+      if (input.containsKey(key)) {
+        int value = integer(input.get(key), key, 1, Integer.MAX_VALUE);
+        sql.put(key, value);
+        applied.put(key, value);
+      }
+    }
+    String provider = input.getOrDefault("providerType", "ALL");
+    switch (provider) {
+      case "GENERAL_CLOUD" -> sql.put("providerType", List.of("hyperscaler"));
+      case "GPU_SPECIALIST" -> sql.put("providerType", List.of("gpu_specialist"));
+      case "UNKNOWN" -> sql.put("providerType", List.of("", "unknown"));
+      case "ALL" -> {}
+      default -> throw invalid("지원하지 않는 providerType입니다.");
+    }
+    applied.put("providerType", provider);
+    applied.put("comparisonType", "SAME_CONDITION");
+    var currency = currency(input);
+    applied.put("currency", currency);
+    if (!summary) {
+      String stale = input.getOrDefault("includeStale", "false");
+      if (!Set.of("true", "false").contains(stale)) {
+        throw invalid("includeStale은 true 또는 false여야 합니다.");
+      }
+      applied.put("includeStale", Boolean.parseBoolean(stale));
+    }
+    return new Filters(applied, sql, currency);
+  }
+
+  private static Map<String, Object> query(Filters filters, Instant asOf) {
+    var params = new HashMap<>(filters.sql());
+    params.put("asOf", utc(asOf));
+    return params;
+  }
+
+  private static String currency(Map<String, String> input) {
+    var currency = input.getOrDefault("currency", "USD");
+    if (!Set.of("USD", "KRW").contains(currency)) {
+      throw invalid("USD 또는 KRW만 지원합니다.");
+    }
+    return currency;
+  }
+
+  private static Cursor cursor(String token, Map<String, Object> filters) {
+    if (token == null) {
+      return new Cursor(Instant.now(), 0);
+    }
+    try {
+      if (token.length() > 256) {
+        throw new IllegalArgumentException();
+      }
+      var parts =
+          new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8).split("\\|", -1);
+      if (parts.length != 3 || !parts[2].equals(Integer.toString(filters.hashCode()))) {
+        throw new IllegalArgumentException();
+      }
+      Instant asOf = Instant.parse(parts[0]);
+      long afterId = Long.parseLong(parts[1]);
+      if (asOf.isAfter(Instant.now()) || afterId < 1) {
+        throw new IllegalArgumentException();
+      }
+      return new Cursor(asOf, afterId);
+    } catch (IllegalArgumentException | java.time.DateTimeException ex) {
+      throw invalid("커서가 유효하지 않거나 현재 조회 조건과 다릅니다.");
+    }
+  }
+
+  private static String encodeCursor(Cursor cursor, Map<String, Object> filters) {
+    var value = cursor.asOf() + "|" + cursor.afterId() + "|" + filters.hashCode();
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static long positive(String value, String field) {
+    try {
+      long id = Long.parseLong(value);
+      if (id > 0) {
+        return id;
+      }
+    } catch (NumberFormatException ignored) {
+      // Report the same validation error for malformed and out-of-range values.
+    }
+    throw invalid(field + "에는 양의 정수가 필요합니다.");
+  }
+
+  private static int integer(String value, String field, int min, int max) {
+    try {
+      int number = Integer.parseInt(value);
+      if (number >= min && number <= max) {
+        return number;
+      }
+    } catch (NumberFormatException ignored) {
+      // Report the supported range below.
+    }
+    throw invalid(field + " 범위는 " + min + "~" + max + "입니다.");
+  }
+
+  private static InvalidRequestException invalid(String message) {
+    return new InvalidRequestException(message);
+  }
+
+  private static String payment(Map<String, Object> row) {
+    if (row.get("payment_option") != null) {
+      return upper(row.get("payment_option"));
+    }
+    return List.of("on_demand", "spot").contains(stringOrEmpty(row.get("contract_type")))
+        ? "NOT_APPLICABLE"
+        : "UNKNOWN";
+  }
+
+  private static Instant time(Map<String, Object> row, String key) {
+    Object value = row.get(key);
+    if (value instanceof Timestamp timestamp) {
+      return timestamp.toInstant();
+    }
+    return value instanceof OffsetDateTime offset ? offset.toInstant() : (Instant) value;
+  }
+
+  private static OffsetDateTime utc(Instant time) {
+    return time.atOffset(ZoneOffset.UTC);
+  }
+
+  private static Long id(Map<String, Object> row, String key) {
+    return row.get(key) == null ? null : number(row, key);
+  }
+
+  private static long number(Map<String, Object> row, String key) {
+    return ((Number) row.get(key)).longValue();
+  }
+
+  private static boolean hasText(Object value) {
+    return !stringOrEmpty(value).isBlank() && !"UNKNOWN".equals(upper(value));
+  }
+
+  private static String upper(Object value) {
+    return value == null ? null : value.toString().toUpperCase(Locale.ROOT);
+  }
+
+  private static String string(Object value) {
+    return value == null ? null : value.toString();
+  }
+
+  private static String stringOrEmpty(Object value) {
+    return value == null ? "" : value.toString();
+  }
+
+  private static String decimal(BigDecimal value) {
+    return value == null ? null : value.toPlainString();
+  }
+
+  private static Object decimalKey(Object value) {
+    return value instanceof BigDecimal number ? number.stripTrailingZeros().toPlainString() : value;
+  }
+
+  private static Map<String, Object> map(Object... fields) {
+    var result = new LinkedHashMap<String, Object>();
+    for (int i = 0; i < fields.length; i += 2) {
+      result.put((String) fields[i], fields[i + 1]);
+    }
+    return result;
+  }
+
+  private record Filters(Map<String, Object> applied, Map<String, Object> sql, String currency) {}
+
+  private record Cursor(Instant asOf, long afterId) {}
+
+  private record Decision(Map<String, Object> key, String reason) {}
+
+  private record Related(
+      Map<Long, List<Map<String, Object>>> evidence,
+      Map<Long, List<Map<String, Object>>> components) {}
+
+  private static class Group {
+    private final Map<Long, BigDecimal> providers = new HashMap<>();
+    private final Set<Long> products = new HashSet<>();
+    private int offers;
+
+    void add(Map<String, Object> row) {
+      providers.merge(
+          number(row, "provider_id"),
+          (BigDecimal) row.get("effective_usd_gpu_hour"),
+          BigDecimal::min);
+      products.add(number(row, "product_id"));
+      offers++;
+    }
+
+    Map<String, Object> response(
+        Map<String, Object> key, Instant asOf, LatestExchangeRateResponseDto rate) {
+      var values = providers.values().stream().sorted().toList();
+      int size = values.size();
+      var min = values.get(0);
+      var max = values.get(size - 1);
+      var median =
+          size % 2 == 1
+              ? values.get(size / 2)
+              : values.get(size / 2 - 1).add(values.get(size / 2)).divide(BigDecimal.valueOf(2));
+      return map(
+          "groupKey",
+          key,
+          "metric",
+          "EFFECTIVE_USD_PER_GPU_HOUR",
+          "aggregationUnit",
+          "PROVIDER_REPRESENTATIVE_LOWEST",
+          "minimum",
+          decimal(min),
+          "median",
+          decimal(median),
+          "maximum",
+          decimal(max),
+          "sampleCounts",
+          map(
+              "providerCount",
+              size,
+              "productCount",
+              products.size(),
+              "offerCount",
+              offers,
+              "observationCount",
+              offers),
+          "warnings",
+          size == 1 ? List.of("SINGLE_PROVIDER") : List.of(),
+          "krwSummary",
+          rate == null ? null : krw(rate, "minimum", min, "median", median, "maximum", max),
+          "asOf",
+          asOf);
+    }
+  }
+}
