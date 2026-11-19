@@ -39,6 +39,10 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ResponseStatusException.class)
   ResponseEntity<ApiResponse<Void>> responseStatus(ResponseStatusException ex) {
+    if (ex.getStatusCode() == HttpStatus.GONE) {
+      return ResponseEntity.status(HttpStatus.GONE)
+          .body(ApiResponse.failure("CURSOR_EXPIRED", "커서가 만료되었습니다. 첫 페이지부터 조회하세요."));
+    }
     return ResponseEntity.status(ex.getStatusCode())
         .body(ApiResponse.failure("NOT_FOUND", "요청한 대상을 찾을 수 없습니다."));
   }

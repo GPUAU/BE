@@ -24,6 +24,7 @@ public class LocalSecurityConfig {
                         "/api/v1/catalog",
                         "/api/v1/market/observations/*",
                         "/api/v1/market/price-histories",
+                        "/api/v1/market/changes",
                         "/api/v1/market/offers",
                         "/api/v1/market/offers/*",
                         "/api/v1/market/summaries",
