@@ -135,7 +135,8 @@ WHERE k.normalization_id IN (:ids) AND k.calculated_at <= :asOf
   AND k.effective_krw_gpu_hour IS NOT NULL
   AND e.base_currency = 'USD' AND e.quote_currency = 'KRW' AND e.rate > 0
   AND e.reference_date <= (o.collected_at AT TIME ZONE 'Asia/Seoul')::date
-  AND (lower(s.base_url) LIKE '%koreaexim.go.kr%' OR lower(e.source_url) LIKE '%koreaexim.go.kr%')
+  AND substring(lower(coalesce(e.source_url, s.base_url)) FROM '^https?://([^/?#]+)')
+    ~ '^([a-z0-9-]+[.])*koreaexim[.]go[.]kr(:[0-9]+)?$'
 """,
         Map.of("ids", normalizationIds, "asOf", asOf));
   }

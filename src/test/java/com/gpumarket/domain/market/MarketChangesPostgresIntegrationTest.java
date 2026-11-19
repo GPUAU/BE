@@ -158,6 +158,12 @@ INSERT INTO price_normalization VALUES
         INSERT INTO exchange_rate VALUES
           (1,1,1300,current_date-3,'USD','KRW',NULL),(2,1,1400,current_date-2,'USD','KRW',NULL)
         """);
-    jdbc.update("INSERT INTO krw_conversion VALUES (110,1,now(),0),(111,2,now(),4200)");
+    jdbc.update(
+        """
+        INSERT INTO exchange_rate VALUES
+          (3,1,9999,current_date-3,'USD','KRW','https://example.com/?source=koreaexim.go.kr')
+        """);
+    jdbc.update(
+        "INSERT INTO krw_conversion VALUES (110,1,now(),0),(111,2,now(),4200),(110,3,now(),0)");
   }
 }

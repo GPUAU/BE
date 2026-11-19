@@ -24,6 +24,17 @@ class MarketApiTest {
   @Autowired MockMvc mvc;
 
   @Test
+  void changesRequiresModelAndValidatesPeriodBeforeQuerying() throws Exception {
+    mvc.perform(get("/api/v1/market/changes")).andExpect(status().isUnprocessableEntity());
+    mvc.perform(
+            get("/api/v1/market/changes")
+                .param("modelId", "1")
+                .param("from", "2026-11-20T00:00:00Z")
+                .param("to", "2026-11-19T00:00:00Z"))
+        .andExpect(status().isUnprocessableEntity());
+  }
+
+  @Test
   void swaggerDocumentsHistoryParameters() throws Exception {
     mvc.perform(get("/v3/api-docs"))
         .andExpect(status().isOk())
@@ -61,17 +72,6 @@ class MarketApiTest {
   @Test
   void offerListRejectsInvalidLimit() throws Exception {
     mvc.perform(get("/api/v1/market/offers?limit=101")).andExpect(status().isUnprocessableEntity());
-  }
-
-  @Test
-  void changesRequiresModelAndValidatesPeriodBeforeQuerying() throws Exception {
-    mvc.perform(get("/api/v1/market/changes")).andExpect(status().isUnprocessableEntity());
-    mvc.perform(
-            get("/api/v1/market/changes")
-                .param("modelId", "1")
-                .param("from", "2026-11-20T00:00:00Z")
-                .param("to", "2026-11-19T00:00:00Z"))
-        .andExpect(status().isUnprocessableEntity());
   }
 
   @Test
