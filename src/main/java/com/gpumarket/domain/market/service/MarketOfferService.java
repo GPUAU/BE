@@ -41,6 +41,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class MarketOfferService {
   private static final String DISCLAIMER = "공개 관측 가격이며 실제 거래가와 다를 수 있습니다.";
   private static final int FRESH_HOURS = 48;
+  private static final int PUBLIC_PRICE_BATCH_SIZE = 100;
+  private static final int PUBLIC_PRICE_LIMIT = 5;
   private static final List<String> TEXT_FILTERS =
       List.of(
           "generation",
@@ -97,52 +99,58 @@ public class MarketOfferService {
   public PublicPriceLookupDto publicPrices(Map<String, String> input) {
     Instant asOf = Instant.now();
     var params = query(filters(input, false), asOf);
-    params.put("cutoff", utc(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)));
-    params.put("pageSize", 101);
-    var found = repository.offers(params);
-    var eligible =
-        found.stream().limit(100).filter(row -> latestPriceExclusion(row, asOf) == null).toList();
-    var related = related(repository, eligible);
+    params.put("publicPriceCutoff", utc(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)));
+    params.put("pageSize", PUBLIC_PRICE_BATCH_SIZE);
     var items = new ArrayList<PublicPriceDto>();
-    boolean limited = found.size() > 100;
-    for (var row : eligible) {
-      var sources =
-          related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()).stream()
-              .filter(source -> publicSource(string(source.get("sourceUrl"))))
-              .map(
-                  source -> {
-                    Map<String, Object> publicEvidence = new LinkedHashMap<>(source);
-                    publicEvidence.put("excerpt", null);
-                    return publicEvidence;
-                  })
-              .toList();
-      if (sources.isEmpty()) {
-        continue;
+    while (true) {
+      var found = repository.offers(params);
+      var eligible = found.stream().filter(row -> latestPriceExclusion(row, asOf) == null).toList();
+      var related = related(repository, eligible, asOf);
+      for (var row : eligible) {
+        var sources =
+            related.evidence().getOrDefault(id(row, "observation_check_id"), List.of()).stream()
+                .filter(source -> publicSource(string(source.get("sourceUrl"))))
+                .map(
+                    source -> {
+                      Map<String, Object> publicEvidence = new LinkedHashMap<>(source);
+                      publicEvidence.put("excerpt", null);
+                      return publicEvidence;
+                    })
+                .toList();
+        if (sources.isEmpty()) {
+          continue;
+        }
+        if (items.size() == PUBLIC_PRICE_LIMIT) {
+          return new PublicPriceLookupDto(items, asOf, true);
+        }
+        items.add(publicPrice(row, related, sources));
       }
-      if (items.size() == 5) {
-        limited = true;
-        break;
+      if (found.size() < PUBLIC_PRICE_BATCH_SIZE) {
+        return new PublicPriceLookupDto(items, asOf, false);
       }
-      items.add(
-          new PublicPriceDto(
-              string(row.get("offer_id")),
-              string(row.get("observation_id")),
-              string(row.get("normalization_id")),
-              string(row.get("product_id")),
-              string(row.get("provider_id")),
-              string(row.get("provider_name")),
-              string(row.get("raw_price_text")),
-              related.components().getOrDefault(id(row, "observation_id"), List.of()),
-              (Integer) row.get("gpu_count"),
-              upper(row.get("country_code")),
-              string(row.get("region_code")),
-              upper(row.get("system_type")),
-              upper(row.get("contract_type")),
-              time(row, "collected_at"),
-              decimal(effectiveAmount(row)),
-              sources));
+      params.put("afterId", number(found.get(found.size() - 1), "offer_id"));
     }
-    return new PublicPriceLookupDto(items, asOf, limited);
+  }
+
+  private static PublicPriceDto publicPrice(
+      Map<String, Object> row, Related related, List<Map<String, Object>> sources) {
+    return new PublicPriceDto(
+        string(row.get("offer_id")),
+        string(row.get("observation_id")),
+        string(row.get("normalization_id")),
+        string(row.get("product_id")),
+        string(row.get("provider_id")),
+        string(row.get("provider_name")),
+        string(row.get("raw_price_text")),
+        related.components().getOrDefault(id(row, "observation_id"), List.of()),
+        (Integer) row.get("gpu_count"),
+        upper(row.get("country_code")),
+        string(row.get("region_code")),
+        upper(row.get("system_type")),
+        upper(row.get("contract_type")),
+        time(row, "collected_at"),
+        decimal(effectiveAmount(row)),
+        sources);
   }
 
   private static boolean publicSource(String value) {
@@ -670,6 +678,11 @@ public class MarketOfferService {
   }
 
   static Related related(MarketOfferRepository repository, List<Map<String, Object>> rows) {
+    return related(repository, rows, null);
+  }
+
+  private static Related related(
+      MarketOfferRepository repository, List<Map<String, Object>> rows, Instant publicPriceAsOf) {
     var checks = new HashSet<Long>();
     var observations = new HashSet<Long>();
     for (var row : rows) {
@@ -681,7 +694,12 @@ public class MarketOfferService {
     checks.remove(null);
     observations.remove(null);
     var evidence = new HashMap<Long, List<Map<String, Object>>>();
-    for (var row : repository.evidence(List.copyOf(checks))) {
+    var checkIds = List.copyOf(checks);
+    var evidenceRows =
+        publicPriceAsOf == null
+            ? repository.evidence(checkIds)
+            : repository.publicPriceEvidence(checkIds, utc(publicPriceAsOf));
+    for (var row : evidenceRows) {
       evidence
           .computeIfAbsent(id(row, "check_id"), ignored -> new ArrayList<>())
           .add(evidence(row));

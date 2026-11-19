@@ -1,5 +1,6 @@
 package com.gpumarket.domain.market.repository;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -30,7 +31,7 @@ JOIN product p ON p.product_id = f.product_id
 JOIN provider v ON v.provider_id = p.provider_id
 JOIN gpu_model g ON g.gpu_model_id = p.gpu_model_id
 LEFT JOIN LATERAL (
-  SELECT obs.*, verified.checked_at, observation_target.source_id
+  SELECT obs.*, verified.checked_at, verified.disclosure_status, observation_target.source_id
   FROM price_observation obs
   JOIN collection_check verified ON verified.check_id = obs.check_id
   JOIN collection_target observation_target ON observation_target.target_id = verified.target_id
@@ -143,6 +144,11 @@ WHERE true
              THEN 'not_applicable' ELSE 'unknown' END) = lower(:paymentOption)
         """);
     append(sql, parameters, "cutoff", "(o.checked_at IS NULL OR o.checked_at >= :cutoff)");
+    append(
+        sql,
+        parameters,
+        "publicPriceCutoff",
+        "o.disclosure_status = 'public' AND o.checked_at >= :publicPriceCutoff");
     sql.append(" ORDER BY f.offer_id");
     if (parameters.containsKey("pageSize")) {
       sql.append(" LIMIT :pageSize");
@@ -169,6 +175,26 @@ WHERE true
         WHERE e.check_id IN (:ids) ORDER BY e.evidence_id
         """,
         Map.of("ids", checkIds));
+  }
+
+  public List<Map<String, Object>> publicPriceEvidence(List<Long> checkIds, OffsetDateTime asOf) {
+    if (checkIds.isEmpty()) {
+      return List.of();
+    }
+    return jdbc.queryForList(
+        """
+        SELECT e.*, d.source_name
+        FROM source_evidence e JOIN data_source d ON d.source_id = e.source_id
+        WHERE e.check_id IN (:ids) AND e.captured_at <= :asOf
+          AND (e.verified_at IS NULL OR e.verified_at <= :asOf)
+          AND (
+            (e.evidence_role = 'official' AND d.source_type IN ('official_api', 'official_page'))
+            OR (e.evidence_role = 'aggregator' AND d.source_type = 'aggregator'
+                AND e.primary_verified IS TRUE AND e.verified_at <= :asOf)
+          )
+        ORDER BY e.evidence_id
+        """,
+        Map.of("ids", checkIds, "asOf", asOf));
   }
 
   public List<Map<String, Object>> components(List<Long> observationIds) {

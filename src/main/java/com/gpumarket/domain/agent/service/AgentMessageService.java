@@ -16,12 +16,16 @@ import java.text.Normalizer;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -29,12 +33,19 @@ public class AgentMessageService {
   private static final String DISCLAIMER = "수집한 공개 가격이며 실제 거래가와 다를 수 있습니다.";
   private static final Pattern SENSITIVE =
       Pattern.compile(
-          "(?i)원가|구매가|매입가|마진|비밀번호|비공개|내부\\s*계약|협상가|비밀키|api["
-              + " _-]*key|password|secret|sk-[a-z0-9_-]{8,}|\\birr\\b");
+          "원가|구매가|매입가|마진|비밀번호|비공개|내부\\s*계약|협상가|비밀키|api["
+              + " _-]*key|password|secret|sk-[a-z0-9_-]{8,}|\\birr\\b"
+              + "|\\b(?:internal|confidential)\\s+(?:(?:purchase|contract)\\s+)?(?:costs?|prices?|rates?)\\b|\\b(?:purchase"
+              + " price|profit margins?)\\b");
   private static final Pattern PRICE = Pattern.compile("가격|단가|시세|\\bprices?\\b|\\brates?\\b");
   private static final Pattern OTHER_INTENT =
       Pattern.compile(
-          "예측|전망|추이|이력|변동|원인|할인|평균|중앙값|최저|최고|내년|개월\\s*뒤|년\\s*(후|뒤|전)|어제|지난|forecast|history|trend|predict|average|median|cheapest");
+          "예측|전망|추이|이력|변동|원인|할인|평균|중앙값|최저|최고|내년|내일|내달|작년"
+              + "|지난|다음\\s*(?:주|달|월|해)|어제|그제|(?:시간|일|주|개월|년)\\s*(?:후|뒤|전)"
+              + "|\\b(?:forecast|history|historical|trend|predict|average|median|cheapest"
+              + "|lowest|highest|tomorrow|yesterday|future|discounts?)\\b"
+              + "|\\b(?:last|next)\\s+(?:week|month|year)\\b"
+              + "|(?<![a-z0-9])20[0-9]{2}(?:[-/.][0-9]{1,2}|\\s*년)");
   private static final Pattern ON_DEMAND = Pattern.compile("온\\s*디맨드|온\\s*디멘드|on[ _-]*demand");
   private static final Pattern OTHER_CONTRACT =
       Pattern.compile("스팟|약정|\\bspot\\b|\\bcommitment\\b|\\breserved\\b");
@@ -42,7 +53,11 @@ public class AgentMessageService {
       Pattern.compile("(?<![a-z0-9])(?:gb|vr|[habvl])[0-9]{2,4}(?![a-z0-9])");
   private static final Pattern REGION =
       Pattern.compile("\\b[a-z]{2}(?:-[a-z]+)+-[0-9]+\\b|리전|서울|오리건|도쿄|버지니아|리전별");
-  private static final Pattern KRW = Pattern.compile("원화|₩|\\bkrw\\b");
+  private static final Pattern NON_USD =
+      Pattern.compile(
+          "원화|원으로|유로|엔화|엔으로|위안|파운드|[₩€¥£]"
+              + "|\\b(?:krw|eur|jpy|cny|gbp|cad|aud|euros?|yen|yuan|won|pounds?)\\b");
+  private static final Pattern PER_GPU = Pattern.compile("\\bper\\s+1\\s+(?=gpus?\\b)");
   private static final Map<String, Pattern> SYSTEMS =
       Map.of(
           "INSTANCE", Pattern.compile("인스턴스|\\binstances?\\b"),
@@ -50,12 +65,14 @@ public class AgentMessageService {
           "RACK_SCALE", Pattern.compile("랙|\\brack\\b"));
   private static final Pattern GPU_COUNT =
       Pattern.compile("(?<![a-z0-9])([0-9]{1,4})\\s*(?:장(?!\\s*당)|gpus?\\b)");
-  private static final Map<String, Pattern> COUNTRIES =
+  private static final Map<String, Pattern> COUNTRY_ALIASES =
       Map.of(
-          "KR", Pattern.compile("한국|국내|대한민국|\\bkr\\b|\\bkorea\\b"),
-          "US", Pattern.compile("미국|\\bus\\b|\\busa\\b"),
-          "JP", Pattern.compile("일본|\\bjp\\b|\\bjapan\\b"),
-          "GB", Pattern.compile("영국|\\buk\\b|\\bgb\\b"));
+          "KR", Pattern.compile("한국|국내|대한민국|\\bkorea\\b"),
+          "US", Pattern.compile("미국|\\busa\\b|\\bu\\.s\\b"),
+          "GB", Pattern.compile("영국|\\buk\\b"));
+  private static final Map<String, Pattern> COUNTRIES =
+      Arrays.stream(Locale.getISOCountries())
+          .collect(Collectors.toUnmodifiableMap(code -> code, AgentMessageService::countryPattern));
   private static final PublicContextDto EMPTY =
       new PublicContextDto(null, null, null, null, null, null);
   private static final DateTimeFormatter OBSERVED_AT =
@@ -70,8 +87,8 @@ public class AgentMessageService {
   }
 
   public AgentMessageResponseDto answer(AgentMessageRequestDto request) {
-    String question =
-        Normalizer.normalize(request.message(), Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
+    String original = Normalizer.normalize(request.message(), Normalizer.Form.NFKC);
+    String question = original.toLowerCase(Locale.ROOT);
     if (SENSITIVE.matcher(question).find()) {
       throw new SensitiveInput();
     }
@@ -92,7 +109,7 @@ public class AgentMessageService {
       return clarify(context, "이 질의 화면에서는 국가 코드로 범위를 지정해 주세요.", "countryCode");
     }
 
-    if (KRW.matcher(question).find()) {
+    if (NON_USD.matcher(question).find()) {
       return clarify(context, "현재 달러 기준 GPU당 시간 단가를 조회합니다.", "currency");
     }
 
@@ -107,8 +124,7 @@ public class AgentMessageService {
     }
 
     var available = catalog.getCatalog();
-    var namedModels =
-        available.models().stream().filter(model -> mentions(question, model.name())).toList();
+    var namedModels = mentionedModels(question, available.models());
     if (namedModels.size() > 1 || (namedModels.isEmpty() && GPU_TOKEN.matcher(question).find())) {
       return clarify(context, "조회할 GPU 모델 한 가지를 확인해 주세요.", "modelId");
     }
@@ -124,7 +140,7 @@ public class AgentMessageService {
 
     var nations =
         COUNTRIES.entrySet().stream()
-            .filter(item -> item.getValue().matcher(question).find())
+            .filter(country -> country.getValue().matcher(original).find())
             .map(Map.Entry::getKey)
             .toList();
     String country = nations.isEmpty() ? upper(context.countryCode()) : nations.get(0);
@@ -132,7 +148,7 @@ public class AgentMessageService {
       return clarify(context, "조회할 국가가 여러 개거나 화면 선택과 다릅니다.", "countryCode");
     }
 
-    var count = GPU_COUNT.matcher(question);
+    var count = GPU_COUNT.matcher(PER_GPU.matcher(question).replaceAll("per "));
     Integer gpuCount = context.gpuCount();
     if (count.find()) {
       int mentioned = Integer.parseInt(count.group(1));
@@ -311,11 +327,47 @@ public class AgentMessageService {
     return text.toString();
   }
 
-  private static boolean mentions(String question, String name) {
+  private static List<GpuModelDto> mentionedModels(String question, List<GpuModelDto> catalog) {
+    if (catalog.isEmpty()) {
+      return List.of();
+    }
+    var names =
+        catalog.stream()
+            .map(model -> model.name().toLowerCase(Locale.ROOT))
+            .distinct()
+            .sorted(Comparator.comparingInt(String::length).reversed())
+            .map(Pattern::quote)
+            .toList();
+    var matcher = bounded(String.join("|", names)).matcher(question);
+    var matches = new HashSet<String>();
+    while (matcher.find()) {
+      matches.add(matcher.group());
+    }
+    return catalog.stream()
+        .filter(model -> matches.contains(model.name().toLowerCase(Locale.ROOT)))
+        .toList();
+  }
+
+  private static Pattern countryPattern(String code) {
+    var locale = new Locale.Builder().setRegion(code).build();
+    String names =
+        Pattern.quote(locale.getDisplayCountry(Locale.ENGLISH))
+            + "|"
+            + Pattern.quote(locale.getDisplayCountry(Locale.KOREAN));
+    var alias = COUNTRY_ALIASES.get(code);
+    if (alias != null) {
+      names += "|" + alias.pattern();
+    }
     return Pattern.compile(
-            "(?<![a-z0-9])" + Pattern.quote(name.toLowerCase(Locale.ROOT)) + "(?![a-z0-9])")
-        .matcher(question)
-        .find();
+        "(?iu:" + bounded(names).pattern() + ")|(?i:\\b(?:in|for)\\s+(?:the\\s+)?)" + code + "\\b");
+  }
+
+  private static boolean mentions(String question, String name) {
+    return bounded(Pattern.quote(name.toLowerCase(Locale.ROOT))).matcher(question).find();
+  }
+
+  private static Pattern bounded(String alternatives) {
+    return Pattern.compile("(?<![a-z0-9])(?:" + alternatives + ")(?![a-z0-9])");
   }
 
   private static boolean conflict(String present, String requested) {
