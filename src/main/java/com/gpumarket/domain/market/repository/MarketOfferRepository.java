@@ -1,5 +1,6 @@
 package com.gpumarket.domain.market.repository;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -198,5 +199,25 @@ WHERE true
     if (params.containsKey(name)) {
       sql.append(" AND ").append(condition);
     }
+  }
+
+  public List<Map<String, Object>> comparablePriceEvidence(
+      List<Long> checkIds, OffsetDateTime asOf) {
+    if (checkIds.isEmpty()) return List.of();
+    return jdbc.queryForList(
+        """
+        SELECT e.*, d.source_name
+        FROM source_evidence e
+        JOIN data_source d ON d.source_id = e.source_id
+        JOIN collection_check c ON c.check_id = e.check_id
+        WHERE e.check_id IN (:ids) AND c.disclosure_status = 'public'
+          AND e.captured_at <= :asOf
+          AND (e.verified_at IS NULL OR e.verified_at <= :asOf)
+          AND ((e.evidence_role = 'official' AND d.source_type IN ('official_api', 'official_page'))
+            OR (e.evidence_role = 'aggregator' AND d.source_type = 'aggregator'
+                AND e.primary_verified IS TRUE AND e.verified_at <= :asOf))
+        ORDER BY e.evidence_id
+        """,
+        Map.of("ids", checkIds, "asOf", asOf));
   }
 }

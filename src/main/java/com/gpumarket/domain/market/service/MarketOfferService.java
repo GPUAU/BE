@@ -9,6 +9,7 @@ import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.global.api.InvalidRequestException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -355,6 +356,85 @@ public class MarketOfferService {
         "disclaimer",
         DISCLAIMER);
   }
+
+  public List<ComparableGroup> comparablePrices(Map<String, String> input) {
+    Instant asOf = Instant.now();
+    var eligible =
+        repository.offers(query(filters(input, true), asOf)).stream()
+            .filter(row -> assess(row, asOf).reason() == null)
+            .toList();
+    var checkIds =
+        eligible.stream().map(row -> id(row, "observation_check_id")).distinct().toList();
+    var byCheck = new HashMap<Long, List<Map<String, Object>>>();
+    for (var source : repository.comparablePriceEvidence(checkIds, utc(asOf))) {
+      var item = evidence(source);
+      if (!isComparablePublicLink(string(item.get("sourceUrl")))) continue;
+      item.put("excerpt", null);
+      byCheck.computeIfAbsent(id(source, "check_id"), ignored -> new ArrayList<>()).add(item);
+    }
+
+    var rowsByGroup = new LinkedHashMap<Map<String, Object>, List<Map<String, Object>>>();
+    for (var row : eligible) {
+      if (!byCheck.containsKey(id(row, "observation_check_id"))) continue;
+      rowsByGroup.computeIfAbsent(groupKey(row), ignored -> new ArrayList<>()).add(row);
+    }
+    return rowsByGroup.entrySet().stream()
+        .map(
+            entry -> {
+              var rows = entry.getValue();
+              var counts =
+                  Map.of(
+                      "providerCount",
+                          (int) rows.stream().map(row -> id(row, "provider_id")).distinct().count(),
+                      "productCount",
+                          (int) rows.stream().map(row -> id(row, "product_id")).distinct().count(),
+                      "offerCount", rows.size(),
+                      "observationCount",
+                          (int)
+                              rows.stream()
+                                  .map(row -> id(row, "observation_id"))
+                                  .distinct()
+                                  .count());
+              var offers =
+                  rows.stream()
+                      .map(
+                          row ->
+                              new ComparableOffer(
+                                  string(row.get("offer_id")),
+                                  effectiveAmount(row),
+                                  price(row, "effective_usd_gpu_hour", certainty(row), null),
+                                  time(row, "collected_at"),
+                                  byCheck.get(id(row, "observation_check_id"))))
+                      .toList();
+              return new ComparableGroup(entry.getKey(), counts, offers, asOf);
+            })
+        .toList();
+  }
+
+  private static boolean isComparablePublicLink(String sourceUrl) {
+    if (sourceUrl == null) return false;
+    try {
+      var uri = URI.create(sourceUrl);
+      return "https".equalsIgnoreCase(uri.getScheme())
+          && uri.getHost() != null
+          && uri.getUserInfo() == null;
+    } catch (IllegalArgumentException ex) {
+      return false;
+    }
+  }
+
+  public record ComparableGroup(
+      Map<String, Object> key,
+      Map<String, Integer> sampleCounts,
+      List<ComparableOffer> offers,
+      Instant asOf) {}
+
+  public record ComparableOffer(
+      String offerId,
+      BigDecimal amount,
+      Map<String, Object> price,
+      Instant collectedAt,
+      List<Map<String, Object>> evidence) {}
 
   private static Decision assess(Map<String, Object> row, Instant asOf) {
     var key = groupKey(row);
