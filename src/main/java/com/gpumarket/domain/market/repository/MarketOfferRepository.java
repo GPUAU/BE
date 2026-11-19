@@ -62,9 +62,7 @@ LEFT JOIN LATERAL (
             inspection.disclosure_status
      FROM collection_check inspection
      WHERE inspection.offer_id = f.offer_id AND inspection.checked_at <= :asOf
-       AND (inspection.processing_status = 'not_found'
-            OR (inspection.processing_status = 'success'
-                AND inspection.disclosure_status <> 'unknown'))
+       AND inspection.processing_status = 'success' AND inspection.disclosure_status = 'public'
      ORDER BY inspection.checked_at DESC, inspection.check_id DESC
      LIMIT 1)
     UNION ALL
@@ -74,25 +72,26 @@ LEFT JOIN LATERAL (
      JOIN collection_check inspection ON inspection.target_id = target.target_id
      WHERE target.provider_id = p.provider_id AND target.gpu_model_id = p.gpu_model_id
        AND target.source_id = o.source_id
-       AND lower(target.region_filter) = lower(p.region_code)
-       AND (
-         (target.contract_filter IN ('on_demand', 'spot')
-           AND target.contract_filter = f.contract_type)
-         OR (f.contract_type = 'commitment' AND
-           (target.contract_filter, lower(f.contract_product_type)) IN (
-             ('reserved_instances', 'reserved instances (standard)'),
-             ('reserved_instances', 'reserved instances (convertible)'),
-             ('reservations', 'reserved vm instances'),
-             ('savings_plans', 'compute savings plans'),
-             ('savings_plans', 'ec2 instance savings plans'),
-             ('savings_plans', 'azure savings plan')))
-       )
-       AND inspection.check_scope = 'target' AND inspection.scope_completed
+       AND (inspection.check_scope = 'target' OR inspection.offer_id = f.offer_id)
+       AND inspection.scope_completed
        AND inspection.checked_at > o.checked_at AND inspection.checked_at <= :asOf
        AND (inspection.processing_status = 'not_found'
             OR (inspection.processing_status = 'success'
                 AND inspection.disclosure_status IN ('not_disclosed', 'contact_sales',
                                                      'login_required')))
+       AND EXISTS (
+         SELECT 1 FROM source_evidence evidence
+         WHERE evidence.check_id = inspection.check_id AND evidence.source_id = target.source_id
+           AND evidence.evidence_role = 'official' AND evidence.primary_verified IS TRUE
+           AND jsonb_path_exists(
+             CASE WHEN pg_input_is_valid(evidence.excerpt, 'jsonb')
+                  THEN evidence.excerpt::jsonb END,
+             'strict $.offerAvailability ? (@.type() == "object" && @.offerId == $offerId
+                && @.validFromEpoch <= $instant && @.validToEpoch > $instant)',
+             jsonb_build_object('offerId', f.offer_id::text,
+                                'instant', extract(epoch FROM CAST(:asOf AS timestamptz))),
+             true)
+       )
      ORDER BY inspection.checked_at DESC, inspection.check_id DESC
      LIMIT 1)
   ) candidate

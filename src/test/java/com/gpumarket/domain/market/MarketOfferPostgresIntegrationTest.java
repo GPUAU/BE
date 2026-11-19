@@ -25,8 +25,9 @@ class MarketOfferPostgresIntegrationTest {
       jdbc.update("INSERT INTO gpu_model VALUES (1, 'B300', 'Blackwell')");
       jdbc.update(
           "INSERT INTO product (product_id, provider_id, gpu_model_id, region_code)"
-              + " VALUES (1,1,1,'us-east-1')");
-      jdbc.update("INSERT INTO offer VALUES (1,1,'on_demand','On-demand')");
+              + " VALUES (1,1,1,'us-east-1'),(2,1,1,'us-east-1')");
+      jdbc.update(
+          "INSERT INTO offer VALUES (1,1,'on_demand','On-demand'),(2,2,'on_demand','On-demand')");
       jdbc.update(
           """
           INSERT INTO collection_target VALUES
@@ -47,13 +48,16 @@ class MarketOfferPostgresIntegrationTest {
             (14,4,NULL,now()-interval '1 hour','not_found','unknown',NULL,'target',true),
             (15,5,NULL,now()-interval '1 hour','not_found','unknown',NULL,'target',true),
             (16,1,NULL,now()-interval '1 hour','success','not_disclosed',NULL,'target',false),
-            (17,6,NULL,now()-interval '1 hour','not_found','unknown',NULL,'target',true)
+            (17,6,NULL,now()-interval '1 hour','not_found','unknown',NULL,'target',true),
+            (20,1,2,now()-interval '3 hours','success','public',NULL,'offer',true)
           """);
       jdbc.update(
           "INSERT INTO price_observation VALUES (1,10,1,now()-interval '4"
-              + " hours',NULL,'firm','$4')");
+              + " hours',NULL,'firm','$4'), (2,20,2,now()-interval '3 hours',NULL,'firm','$5')");
       var repository = new MarketOfferRepository(new NamedParameterJdbcTemplate(jdbc));
-      var query = Map.<String, Object>of("offerId", 1L, "asOf", OffsetDateTime.now());
+      var asOf = OffsetDateTime.now().withNano(0);
+      var query = Map.<String, Object>of("offerId", 1L, "asOf", asOf);
+      var otherOffer = Map.<String, Object>of("offerId", 2L, "asOf", asOf);
       assertThat(repository.offers(query).get(0))
           .containsEntry("processing_status", "collection_failed")
           .containsEntry("disclosure_status", "public")
@@ -64,11 +68,23 @@ class MarketOfferPostgresIntegrationTest {
           INSERT INTO collection_check VALUES
             (18,1,NULL,now()-interval '30 minutes','not_found','unknown',NULL,'target',true)
           """);
+      jdbc.update(
+          "INSERT INTO source_evidence VALUES (18,1,'official',true,'unstructured history')");
+      assertThat(repository.offers(query).get(0)).containsEntry("disclosure_check_id", 10L);
+      assertThat(repository.offers(otherOffer).get(0)).containsEntry("disclosure_check_id", 20L);
+
+      addVerifiedScope(jdbc, 18, "1", asOf.minusHours(2), asOf);
+      assertThat(repository.offers(query).get(0)).containsEntry("disclosure_check_id", 10L);
+
+      addVerifiedScope(jdbc, 18, "1", asOf, asOf.plusHours(1));
       assertThat(repository.offers(query).get(0))
           .containsEntry("processing_status", "collection_failed")
           .containsEntry("disclosure_processing_status", "not_found")
           .containsEntry("disclosure_check_id", 18L)
           .containsEntry("observation_id", 1L);
+      assertThat(repository.offers(otherOffer).get(0))
+          .containsEntry("disclosure_check_id", 20L)
+          .containsEntry("raw_price_text", "$5");
 
       jdbc.update(
           """
@@ -82,6 +98,21 @@ class MarketOfferPostgresIntegrationTest {
     } finally {
       ds.destroy();
     }
+  }
+
+  private static void addVerifiedScope(
+      JdbcTemplate jdbc, long checkId, String offerId, OffsetDateTime from, OffsetDateTime to) {
+    jdbc.update(
+        """
+        INSERT INTO source_evidence
+        SELECT ?, 1, 'official', true, jsonb_build_object('offerAvailability',
+          jsonb_build_object('offerId', ?::text, 'validFromEpoch', ?::bigint,
+                             'validToEpoch', ?::bigint))::text
+        """,
+        checkId,
+        offerId,
+        from.toEpochSecond(),
+        to.toEpochSecond());
   }
 
   private static void createTables(JdbcTemplate jdbc) {
@@ -111,6 +142,11 @@ CREATE TEMP TABLE collection_target(target_id bigint, provider_id bigint, gpu_mo
         CREATE TEMP TABLE collection_check(check_id bigint, target_id bigint, offer_id bigint,
           checked_at timestamptz, processing_status text, disclosure_status text, reason text,
           check_scope text, scope_completed boolean)
+        """);
+    jdbc.execute(
+        """
+        CREATE TEMP TABLE source_evidence(check_id bigint, source_id bigint,
+          evidence_role text, primary_verified boolean, excerpt text)
         """);
     jdbc.execute(
         """
