@@ -152,6 +152,7 @@ public class MarketOfferService {
         baseline != null
             ? rows.stream()
                 .filter(row -> "commitment".equals(row.get("contract_type")))
+                .filter(MarketOfferService::hasKnownCommitmentTerms)
                 .filter(row -> "estimate".equals(row.get("price_certainty")))
                 .filter(row -> "nonExactOffers".equals(latestPriceExclusion(row, asOf)))
                 .map(row -> id(row, "observation_id"))
@@ -170,12 +171,17 @@ public class MarketOfferService {
       String offerId = string(row.get("offer_id"));
       String type = upper(row.get("contract_type"));
       var effective = price(row, "effective_usd_gpu_hour", certainty(row), exchangeRate);
-      if (row.get("observation_id") == null) {
+      String exclusion = latestPriceExclusion(row, asOf);
+      if ("notFoundOffers".equals(exclusion)) {
+        effective.put("amount", null);
+        effective.put("status", "UNAVAILABLE");
+        effective.put("reason", "LATEST_PRICE_NOT_AVAILABLE");
+        effective.put("krw", exchangeRate == null ? null : krw(exchangeRate, "amount", null));
+      } else if (row.get("observation_id") == null) {
         effective.put("reason", "PRICE_NOT_OBSERVED");
       }
 
       if ("COMMITMENT".equals(type)) {
-        String exclusion = latestPriceExclusion(row, asOf);
         String unavailable = contractDiscountReason(baselines.size(), baseline, row, exclusion);
         if (unavailable == null) {
           var baseAmount = effectiveAmount(baseline);
@@ -197,6 +203,7 @@ public class MarketOfferService {
         if (baseline != null
             && "nonExactOffers".equals(exclusion)
             && "estimate".equals(row.get("price_certainty"))
+            && hasKnownCommitmentTerms(row)
             && sameContractMinimum(baseline, row)) {
           var facts = components.getOrDefault(id(row, "observation_id"), List.of());
           applyDiscountScenario(effective, facts, baseline, exchangeRate);
@@ -237,13 +244,18 @@ public class MarketOfferService {
       };
     }
     if (!sameContractMinimum(baseline, commitment)
-        || commitment.get("commitment_months") == null
-        || "UNKNOWN".equals(payment(commitment))
+        || !hasKnownCommitmentTerms(commitment)
         || !hasText(baseline.get("rule_version"))
         || !baseline.get("rule_version").equals(commitment.get("rule_version"))) {
       return "CONDITIONS_NOT_COMPARABLE";
     }
     return null;
+  }
+
+  private static boolean hasKnownCommitmentTerms(Map<String, Object> commitment) {
+    return commitment.get("commitment_months") instanceof Number months
+        && months.intValue() > 0
+        && Set.of("ALL_UPFRONT", "PARTIAL_UPFRONT", "NO_UPFRONT").contains(payment(commitment));
   }
 
   private static boolean sameContractMinimum(

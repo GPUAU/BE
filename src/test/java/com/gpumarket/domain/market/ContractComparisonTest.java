@@ -77,6 +77,36 @@ class ContractComparisonTest {
   }
 
   @Test
+  void doesNotPriceAnUnavailableOfferOrAnEstimateWithUnknownContractTerms() {
+    var unavailable = offer(2, "commitment", "8");
+    unavailable.put("disclosure_processing_status", "not_found");
+    unavailable.put("disclosure_checked_at", Instant.now());
+    var estimate = offer(3, "commitment", "0");
+    estimate.put("price_certainty", "estimate");
+    estimate.put("result_status", "assumption");
+    estimate.remove("payment_option");
+    when(repository.components(List.of(103L)))
+        .thenReturn(
+            List.of(
+                Map.of(
+                    "observation_id",
+                    103L,
+                    "component_type",
+                    "discount_rate",
+                    "discount_rate",
+                    new BigDecimal("0.15"))));
+    when(repository.offers(anyMap()))
+        .thenReturn(List.of(offer(1, "on_demand", "10"), unavailable, estimate));
+
+    var result = service.contracts(20, Map.of());
+    assertThat(result.items().get(1).effective())
+        .containsEntry("status", "UNAVAILABLE")
+        .containsEntry("amount", null);
+    assertThat(result.items().get(1).observationId()).isEqualTo("102");
+    assertThat(result.items().get(2).effective()).containsEntry("amount", null);
+  }
+
+  @Test
   void returnsAnEmptyResultOnlyForAnExistingProduct() {
     when(repository.productExists(20)).thenReturn(true);
 
