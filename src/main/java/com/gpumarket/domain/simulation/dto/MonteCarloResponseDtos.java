@@ -5,6 +5,7 @@ import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.HistoryEviden
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.HistoryPoint;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.MonthlyRange;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloPricing.PricingResult;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -17,6 +18,8 @@ public final class MonteCarloResponseDtos {
       String datasetVersion,
       LocalDate dataAsOf,
       String historyHash,
+      String configHash,
+      Instant runAt,
       String algorithmVersion,
       String unit,
       int hoursPerMonth,

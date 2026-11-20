@@ -235,6 +235,8 @@ GPU_API_BASE_URL=http://127.0.0.1:18083 python3 scripts/live_api_smoke.py
 
 가격 단위는 USD/GPU·시간이다. 월 기준시간은 730시간이며 IRR과 비용·가동률 비율은 소수로 입력한다. `simulation`은 두 API에서 같은 구조를 사용한다.
 
+두 API의 `metadata.runAt`은 서버가 계산을 시작한 시각(UTC)이다. `metadata.configHash`는 검증한 요청 전체의 SHA-256 값이다. 예측에서는 시뮬레이션 설정과 분석 기간을, 판매가 계산에서는 원가·가동률·목표 IRR·후보가를 포함한 `config`와 시장 선택 조건 `selection`을 식별한다. JSON 필드 순서나 같은 숫자의 표기만 바꾸면 해시는 같다. 가격 이력 파일은 별도의 `historyHash`로 식별한다.
+
 ```json
 {
   "simulation": {
@@ -286,6 +288,7 @@ GPU_API_BASE_URL=http://127.0.0.1:18083 python3 scripts/live_api_smoke.py
 
 - `nPaths`는 1,000~50,000, 분석 기간은 12~60개월, 후보가는 1~8개를 허용한다. 삼각분포는 최소·최빈·최대 순으로 입력한다.
 - 시장 시나리오는 `CONSERVATIVE`(P25), `BASELINE`(P50), `OPTIMISTIC`(P75)다. 선택 분위 ±10%p의 12개월 도달 가격에 해당하는 경로로 판매가를 계산한다. `post12Trend`는 `KEEP`, `EASE`, `FLAT`을 지원한다.
+- 시장가를 직접 입력하면 `pricing.selection.marketPricePercentile`에 12개월 후 가격이 입력가 이하인 경로의 비율(0~1)을 반환한다. 예를 들어 하위 6%이면 실제 값은 `0.06`, 경로 선택에 사용하는 `centerQuantile`은 `0.10`이다. 시나리오를 선택하면 `marketPricePercentile`은 `null`이다.
 - `pricingMode`의 `FIXED`는 기간 동안 판매가를 고정한다. `FOLLOW_MARKET`은 매월 기준 판매가에 시장 지수를 곱한다. 두 방식 모두 투자비는 최초 월, 잔존가치는 마지막 월에 반영한다.
 - 목표 IRR 달성 비율은 선택한 경로 중 목표 수익률로 할인한 순현재가치가 0 이상인 비율이다. 후보가별 IRR 분위수는 처음 최대 1,000개 경로에서 구한다. Python 기준식과 동일한 월 IRR 탐색 구간(−99%~100%)에서 값을 구하지 못한 표본은 `irrUndefinedCount`에 포함한다. 모두 해당하면 IRR 분위수는 `null`이다. 13개월 이후의 가격 경로는 선택한 추세 가정을 적용한다.
 - 숫자 입력은 JSON 숫자, 선택값은 문서에 표시한 이름을 사용한다. 지원하지 않는 모델·데이터 설정 등 요청 DTO에 없는 필드도 요청 형식 오류로 처리한다.

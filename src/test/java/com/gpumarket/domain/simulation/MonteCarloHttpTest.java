@@ -3,6 +3,7 @@ package com.gpumarket.domain.simulation;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -61,6 +62,53 @@ class MonteCarloHttpTest {
 
     assertThat(post(FORECAST, request).getBody().path("result").path("monthly"))
         .isEqualTo(result.path("monthly"));
+  }
+
+  @Test
+  void forecastHashIdentifiesInputsIndependentlyOfJsonFormatting() {
+    String original = "{\"simulation\":" + SIMULATION + ",\"analysisMonths\":12}";
+    String equivalent =
+        "{\"analysisMonths\":12,\"simulation\":"
+            + SIMULATION.replace("\"meanBlockLength\":3", "\"meanBlockLength\":3.00")
+            + "}";
+    String hash = calculationHash(FORECAST, original);
+
+    assertThat(hash).isEqualTo("4441166166e6cceb98fc91b467daa8cf5365ccfcc27ee7f3ad72441edaababdb");
+    assertThat(calculationHash(FORECAST, equivalent)).isEqualTo(hash);
+    assertThat(calculationHash(FORECAST, original.replace("0.03", "0.04"))).isNotEqualTo(hash);
+    assertThat(
+            calculationHash(
+                FORECAST, original.replace("\"analysisMonths\":12", "\"analysisMonths\":24")))
+        .isNotEqualTo(hash);
+  }
+
+  @Test
+  void pricingHashIncludesInvestmentAssumptionsAndMarketSelection() {
+    String original = pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":\"EASE\"}");
+    String equivalent =
+        pricing("{\"post12Trend\":\"EASE\",\"marketPrice12m\":null,\"scenario\":\"BASELINE\"}")
+            .replace("[0.00,0.03,0.12]", "[-0.0,0.03,0.12]")
+            .replace("\"capexPerGpu\":55000", "\"capexPerGpu\":5.5e4");
+    String hash = calculationHash(PRICING, original);
+
+    assertThat(calculationHash(PRICING, equivalent)).isEqualTo(hash);
+    assertThat(calculationHash(PRICING, original.replace("55000", "56000"))).isNotEqualTo(hash);
+    assertThat(calculationHash(PRICING, original.replace("BASELINE", "OPTIMISTIC")))
+        .isNotEqualTo(hash);
+  }
+
+  private String calculationHash(String endpoint, String request) {
+    Instant before = Instant.now();
+    var response = post(endpoint, request);
+    Instant after = Instant.now();
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    JsonNode metadata = response.getBody().path("result").path("metadata");
+    String runAt = metadata.path("runAt").asText();
+    assertThat(runAt).endsWith("Z");
+    assertThat(Instant.parse(runAt)).isBetween(before, after);
+    String hash = metadata.path("configHash").asText();
+    assertThat(hash).matches("[0-9a-f]{64}");
+    return hash;
   }
 
   @Test

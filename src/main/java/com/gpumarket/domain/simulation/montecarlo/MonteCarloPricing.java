@@ -83,6 +83,7 @@ public final class MonteCarloPricing {
     }
 
     List<String> warnings = List.of();
+    Double marketPricePercentile = null;
     double center;
     if (scenario != null) {
       center =
@@ -92,11 +93,12 @@ public final class MonteCarloPricing {
             case OPTIMISTIC -> 0.75;
           };
     } else {
-      center = MonteCarloMarket.probabilityAtOrBelow(sortedAnchorPrices, marketPrice);
-      if (center < 0.05 || center > 0.95) {
+      marketPricePercentile =
+          MonteCarloMarket.probabilityAtOrBelow(sortedAnchorPrices, marketPrice);
+      if (marketPricePercentile < 0.05 || marketPricePercentile > 0.95) {
         warnings = List.of("직접 입력 시장가격이 12개월 가격 분포의 양 끝 5% 밖에 있습니다.");
       }
-      center = Math.min(Math.max(center, SELECTION_BAND), 1.0 - SELECTION_BAND);
+      center = Math.min(Math.max(marketPricePercentile, SELECTION_BAND), 1.0 - SELECTION_BAND);
     }
 
     double lowerQuantile = Math.max(0.0, center - SELECTION_BAND);
@@ -117,6 +119,7 @@ public final class MonteCarloPricing {
         new SelectionResult(
             scenario,
             marketPrice,
+            marketPricePercentile,
             center,
             lowerQuantile,
             upperQuantile,
@@ -162,10 +165,12 @@ public final class MonteCarloPricing {
 
       double[] sortedIrrs = Arrays.copyOf(irrs, defined);
       Arrays.sort(sortedIrrs);
+      // Allow one price ULP per month for rounding in the discounted cash-flow sums.
+      double inclusiveCutoff = price + config.investment().months() * Math.ulp(price);
       result.add(
           new Candidate(
               price,
-              MonteCarloMarket.probabilityAtOrBelow(required, price),
+              MonteCarloMarket.probabilityAtOrBelow(required, inclusiveCutoff),
               defined == 0 ? null : quantile(sortedIrrs, 0.10),
               defined == 0 ? null : quantile(sortedIrrs, 0.50),
               defined == 0 ? null : quantile(sortedIrrs, 0.90),
@@ -303,6 +308,7 @@ public final class MonteCarloPricing {
   public record SelectionResult(
       Scenario scenario,
       Double marketPrice12m,
+      Double marketPricePercentile,
       double centerQuantile,
       double lowerQuantile,
       double upperQuantile,

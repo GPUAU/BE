@@ -2,13 +2,39 @@ package com.gpumarket.domain.simulation.montecarlo;
 
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 public final class MonteCarloJson {
+  private static final ObjectWriter SORTED_INPUT_WRITER =
+      JsonMapper.builder().enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY).build().writer();
+
   private MonteCarloJson() {}
+
+  public static String configHash(StrictFields validatedRequest) {
+    try {
+      return sha256(SORTED_INPUT_WRITER.writeValueAsBytes(validatedRequest));
+    } catch (JsonProcessingException exception) {
+      throw new IllegalStateException("Cannot serialize Monte Carlo inputs", exception);
+    }
+  }
+
+  static String sha256(byte[] bytes) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 unavailable", exception);
+    }
+  }
 
   public interface StrictFields {
     @JsonAnySetter
@@ -24,7 +50,8 @@ public final class MonteCarloJson {
       if (!parser.currentToken().isNumeric()) {
         return (Double) context.handleUnexpectedToken(Double.class, parser);
       }
-      return parser.getDoubleValue();
+      double value = parser.getDoubleValue();
+      return value == 0.0 ? 0.0 : value;
     }
   }
 

@@ -2,12 +2,9 @@ package com.gpumarket.domain.simulation.montecarlo;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.SplittableRandom;
 import java.util.random.RandomGenerator;
@@ -75,7 +72,7 @@ public final class MonteCarloMarket {
       }
 
       return new MarketHistory(
-          points, returns, summarizeHistory(points, returns), sha256(rawHistory));
+          points, returns, summarizeHistory(points, returns), MonteCarloJson.sha256(rawHistory));
     } catch (IOException exception) {
       throw new IllegalStateException("Cannot read Monte Carlo sample history", exception);
     }
@@ -137,14 +134,6 @@ public final class MonteCarloMarket {
         points.get(worst + 1).month(),
         Math.exp(returns[worst]) - 1,
         (double) negativeMonths / returns.length);
-  }
-
-  private static String sha256(byte[] bytes) {
-    try {
-      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-    } catch (NoSuchAlgorithmException exception) {
-      throw new IllegalStateException("SHA-256 unavailable", exception);
-    }
   }
 
   public static double[][] generatePaths(

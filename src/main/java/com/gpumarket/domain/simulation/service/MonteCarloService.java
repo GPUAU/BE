@@ -7,10 +7,13 @@ import com.gpumarket.domain.simulation.dto.MonteCarloResponseDtos.Metadata;
 import com.gpumarket.domain.simulation.dto.MonteCarloResponseDtos.Pricing;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloConfig.Post12Trend;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloConfig.Simulation;
+import com.gpumarket.domain.simulation.montecarlo.MonteCarloJson;
+import com.gpumarket.domain.simulation.montecarlo.MonteCarloJson.StrictFields;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.MarketHistory;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloPricing;
 import com.gpumarket.global.api.InvalidRequestException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.Semaphore;
@@ -35,11 +38,12 @@ public class MonteCarloService {
 
     return calculate(
         () -> {
+          Metadata metadata = metadata(request, simulation, request.analysisMonths());
           double[][] paths =
               MonteCarloMarket.generatePaths(
                   simulation, request.analysisMonths(), Post12Trend.KEEP, history.returns());
           return new Forecast(
-              metadata(simulation, request.analysisMonths()),
+              metadata,
               history.evidence(),
               history.points(),
               MonteCarloMarket.marketRanges(paths, history.lastPrice(), FORECAST_MONTHS));
@@ -75,11 +79,12 @@ public class MonteCarloService {
 
     return calculate(
         () -> {
+          Metadata metadata = metadata(request, simulation, investment.months());
           double[][] paths =
               MonteCarloMarket.generatePaths(
                   simulation, investment.months(), selection.post12Trend(), history.returns());
           return new Pricing(
-              metadata(simulation, investment.months()),
+              metadata,
               selection.post12Trend(),
               MonteCarloMarket.marketRanges(paths, history.lastPrice(), investment.months()),
               MonteCarloPricing.calculate(config, selection, paths, history.lastPrice()));
@@ -107,14 +112,17 @@ public class MonteCarloService {
     }
   }
 
-  private Metadata metadata(Simulation simulation, int months) {
+  private Metadata metadata(StrictFields request, Simulation simulation, int months) {
+    Instant runAt = Instant.now();
     return new Metadata(
         "B300",
         true,
         "b300-sample-2026-11",
         LocalDate.of(2026, 11, 1),
         history.historyHash(),
-        "java-monte-carlo-v1",
+        MonteCarloJson.configHash(request),
+        runAt,
+        "java-monte-carlo-v2",
         "USD/GPU-hour",
         730,
         simulation.seed(),

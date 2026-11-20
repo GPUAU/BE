@@ -12,6 +12,8 @@ import com.gpumarket.domain.simulation.montecarlo.MonteCarloPricing.ScenarioInpu
 import java.io.IOException;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class MonteCarloPythonParityTest {
   private static final ObjectMapper JSON = new ObjectMapper();
@@ -75,8 +77,31 @@ class MonteCarloPythonParityTest {
     }
   }
 
+  @ParameterizedTest
+  @CsvSource({"2.16, 1, 0.10", "3.65, 20, 0.90"})
+  void reportsActualMarketPricePercentileOutsideTheSelectionBand(
+      double marketPrice, int pathsAtOrBelowPrice, double expectedCenter) throws IOException {
+    var fixture = readFixture();
+    var paths = JSON.treeToValue(fixture.required("paths"), double[][].class);
+    var config =
+        JSON.treeToValue(
+            fixture.required("pricingCases").get(0).required("config"), MonteCarloConfig.class);
+    var samples = JSON.treeToValue(fixture.required("sampleInputs"), ScenarioInputs[].class);
+    var selection = new Selection(null, marketPrice, MonteCarloConfig.Post12Trend.EASE);
+    var result =
+        MonteCarloPricing.calculate(
+            config, selection, paths, fixture.required("lastPrice").doubleValue(), samples);
+
+    assertThat(paths.length).isEqualTo(21);
+    assertThat(result.selection().marketPricePercentile()).isEqualTo(pathsAtOrBelowPrice / 21.0);
+    assertThat(result.selection().centerQuantile()).isEqualTo(expectedCenter);
+  }
+
   private static void assertSelectionMatches(PricingResult actual, JsonNode expected) {
     var selection = actual.selection();
+    if (selection.scenario() != null) {
+      assertThat(selection.marketPricePercentile()).isNull();
+    }
     assertThat(selection.nSelected()).isEqualTo(expected.required("n_selected").intValue());
     assertThat(selection.warnings()).hasSize(expected.required("warnings").size());
     assertClose(selection.centerQuantile(), expected.required("center_q"));

@@ -9,6 +9,35 @@ import org.junit.jupiter.api.Test;
 
 class MonteCarloPricingTest {
   @Test
+  void countsAnExactlyBreakEvenCandidateAsMeetingTheTarget() {
+    var config =
+        new MonteCarloConfig(
+            new MonteCarloConfig.Simulation(1000, 42, 3.0, 0.0, List.of(0.0, 0.0, 0.0)),
+            new MonteCarloConfig.Investment(
+                1, 12, 12779.0, 6, 0.0, MonteCarloConfig.PricingMode.FIXED),
+            new MonteCarloConfig.Uncertain(
+                List.of(0.68, 0.68, 0.68),
+                List.of(0.0, 0.0, 0.0),
+                List.of(900.0, 900.0, 900.0),
+                List.of(0.0, 0.0, 0.0)),
+            0.0,
+            List.of(4.99, 4.999999, 5.0, 5.01));
+
+    var result =
+        MonteCarloPricing.calculate(
+            config,
+            new MonteCarloConfig.Selection(
+                MonteCarloConfig.Scenario.BASELINE, null, MonteCarloConfig.Post12Trend.KEEP),
+            new double[][] {path(1.0)},
+            5.0);
+
+    // At $5, revenue (9.5 × 730 × 0.68 × 5) and cost (12,779 + 12 × 900) both equal $23,579.
+    assertThat(result.candidates())
+        .extracting(MonteCarloPricing.Candidate::probabilityMeetTarget)
+        .containsExactly(0.0, 0.0, 1.0, 1.0);
+  }
+
+  @Test
   void matchesAnalyticalFixedPriceAndPreservesUndefinedIrr() {
     var config = config(MonteCarloConfig.PricingMode.FIXED, List.of(0.01, 3.0));
     var result =
