@@ -224,6 +224,81 @@ GPU_API_BASE_URL=http://127.0.0.1:18083 python3 scripts/live_api_smoke.py
 - `providerIds`, `countryCode`, `contractType`으로 좁힐 수 있다. 국가나 계약으로 좁혔을 때 범위를 확인할 수 없는 전체 대상 점검은 해당 국가·계약의 상태 판정에 사용하지 않는다.
 - `limit` 기본값은 50, 최대값은 100이다. 다음 페이지 요청에는 같은 필터와 `nextCursor`를 사용한다. 커서는 첫 요청의 `asOf`를 유지하며 30분 후 만료된다. 후속 페이지도 기준 시각 이후에 확보한 근거는 포함하지 않으며, 나중에 확인한 공식 원천 검증은 그 이전 시점의 확인으로 표시하지 않는다. 각 요청은 별도 DB 스냅샷을 사용한다.
 
+### 몬테카를로 가격 범위와 목표 IRR 기준 판매가
+
+두 API는 Spring에서 Java로 계산한다. 계산 데이터는 버전이 지정된 B300 가상 가격 이력 18개월이다. 응답의 `metadata.isSample`은 `true`이며 실제 시장 예측이나 확정 판매가격으로 사용할 수 없다. 입력·결과는 DB에 저장하거나 외부 서비스로 보내지 않는다.
+
+| 메서드 | 경로 | 요청 | 응답 `result` |
+| --- | --- | --- | --- |
+| POST | `/api/v1/monte-carlo-forecasts` | `simulation`, `analysisMonths` | `metadata`, `evidence`, 가격 `history`, 첫 12개월 `monthly` 가격 분위수 |
+| POST | `/api/v1/monte-carlo-pricing-simulations` | `config`, `selection` | `metadata`, `post12Trend`, 분석 기간의 `monthly`, `pricing`의 확률별 필요 판매가·후보가별 IRR·민감도·비교 시나리오 |
+
+가격 단위는 USD/GPU·시간이다. 월 기준시간은 730시간이며 IRR과 비용·가동률 비율은 소수로 입력한다. `simulation`은 두 API에서 같은 구조를 사용한다.
+
+```json
+{
+  "simulation": {
+    "nPaths": 20000,
+    "seed": 20261118,
+    "meanBlockLength": 3,
+    "jumpProbPerMonth": 0.03,
+    "jumpSizeTri": [-0.30, -0.15, -0.05]
+  },
+  "analysisMonths": 48
+}
+```
+
+판매가 요청 예시는 다음과 같다. `selection`에는 `scenario` 또는 `marketPrice12m` 중 하나를 사용한다.
+
+```json
+{
+  "config": {
+    "simulation": {
+      "nPaths": 20000,
+      "seed": 20261118,
+      "meanBlockLength": 3,
+      "jumpProbPerMonth": 0.03,
+      "jumpSizeTri": [-0.30, -0.15, -0.05]
+    },
+    "investment": {
+      "gpus": 64,
+      "months": 48,
+      "capexPerGpu": 55000,
+      "rampMonths": 3,
+      "residualValuePct": 0.10,
+      "pricingMode": "FOLLOW_MARKET"
+    },
+    "uncertain": {
+      "utilization": [0.55, 0.75, 0.90],
+      "capexOverrun": [0.00, 0.03, 0.12],
+      "opexPerGpuMonth": [700, 900, 1200],
+      "opexAnnualInflation": [0.01, 0.03, 0.06]
+    },
+    "targetIrrAnnual": 0.15,
+    "candidatePrices": [5, 6, 7, 8]
+  },
+  "selection": {
+    "scenario": "BASELINE",
+    "post12Trend": "EASE"
+  }
+}
+```
+
+- `nPaths`는 1,000~50,000, 분석 기간은 12~60개월, 후보가는 1~8개를 허용한다. 삼각분포는 최소·최빈·최대 순으로 입력한다.
+- 시장 시나리오는 `CONSERVATIVE`(P25), `BASELINE`(P50), `OPTIMISTIC`(P75)다. 선택 분위 ±10%p의 12개월 도달 가격에 해당하는 경로로 판매가를 계산한다. `post12Trend`는 `KEEP`, `EASE`, `FLAT`을 지원한다.
+- `pricingMode`의 `FIXED`는 기간 동안 판매가를 고정한다. `FOLLOW_MARKET`은 매월 기준 판매가에 시장 지수를 곱한다. 두 방식 모두 투자비는 최초 월, 잔존가치는 마지막 월에 반영한다.
+- 목표 IRR 달성 비율은 선택한 경로 중 목표 수익률로 할인한 순현재가치가 0 이상인 비율이다. 후보가별 IRR 분위수는 처음 최대 1,000개 경로에서 IRR을 정의할 수 있는 표본으로 구하고, 사용한 표본 수와 IRR 미정의 건수를 반환한다. 13개월 이후의 가격 경로는 선택한 추세 가정을 적용한다.
+- 요청 형식 오류는 `400`, 입력 제약 위반은 `422`, 같은 Spring 인스턴스에서 계산 중이면 `429 SIMULATION_BUSY`를 반환한다. 현재 `local` 프로필의 POST만 허용하며 `deploy`는 기존 배포 보안 정책을 적용한다.
+- 같은 알고리즘 버전과 데이터 해시, 입력·시드를 사용하면 Java 결과를 재현할 수 있다. Python과의 회귀 비교는 계산기에 동일한 경로·투자비·가동률 표본을 넣어 검증한다.
+
+```sh
+./gradlew test --tests '*MonteCarlo*'
+python3 scripts/generate_monte_carlo_parity_fixture.py /path/to/FE \
+  | cmp - src/test/resources/montecarlo/python-parity.json
+```
+
+두 번째 명령은 시연용 Python 엔진의 FE 커밋 `bd73c5c`를 체크아웃한 경로로 실행한다. Spring API 실행에는 Python 설치가 필요하지 않다.
+
 ### Agent 공개 가격 질의
 
 `POST /api/v1/agent-messages`에 아래와 같이 질문한다.
