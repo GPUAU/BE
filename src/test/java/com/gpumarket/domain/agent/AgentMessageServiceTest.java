@@ -10,6 +10,7 @@ import com.gpumarket.domain.agent.dto.AgentMessageResponseDto;
 import com.gpumarket.domain.agent.dto.PublicContextDto;
 import com.gpumarket.domain.agent.service.AgentMessageService;
 import com.gpumarket.domain.agent.service.AgentMessageService.SensitiveInput;
+import com.gpumarket.domain.agent.service.AgentSessionStore;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
 import com.gpumarket.domain.catalog.service.CatalogService;
@@ -51,7 +52,7 @@ class AgentMessageServiceTest {
         .thenReturn(empty);
     when(offers.publicPrices(Map.of("modelId", "3", "contractType", "ON_DEMAND")))
         .thenReturn(empty);
-    service = new AgentMessageService(catalog, offers);
+    service = new AgentMessageService(catalog, offers, new AgentSessionStore());
   }
 
   @Test
@@ -87,6 +88,17 @@ class AgentMessageServiceTest {
   @Test
   void treatsPerOneGpuAsAUnitInsteadOfAnOfferConfiguration() {
     assertThat(answer("B300 on-demand price per 1 GPU").appliedConditions().gpuCount()).isNull();
+  }
+
+  @Test
+  void followUpChangesOnlyTheCountryAndKeepsTheModelAndContract() {
+    var first = answer("B300 미국 온디맨드 가격");
+
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), "그럼 독일은?", null));
+
+    assertThat(next.appliedConditions().countryCode()).isEqualTo("DE");
+    assertThat(next.retainedConditions()).containsExactly("modelId", "contractType");
+    assertThat(next.changedConditions()).containsExactly("countryCode");
   }
 
   @Test

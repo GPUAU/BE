@@ -5,13 +5,13 @@ import com.gpumarket.domain.agent.dto.AgentMessageResponseDto;
 import com.gpumarket.domain.agent.dto.AgentMessageResponseDto.AgentResultDto;
 import com.gpumarket.domain.agent.dto.AgentMessageResponseDto.SampleCountsDto;
 import com.gpumarket.domain.agent.dto.PublicContextDto;
+import com.gpumarket.domain.agent.service.AgentSessionStore.Conditions;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto.ProviderDto;
 import com.gpumarket.domain.catalog.service.CatalogService;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
 import com.gpumarket.domain.market.service.MarketOfferService;
-import com.gpumarket.global.api.InvalidRequestException;
 import java.text.Normalizer;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -75,15 +75,19 @@ public class AgentMessageService {
           .collect(Collectors.toUnmodifiableMap(code -> code, AgentMessageService::countryPattern));
   private static final PublicContextDto EMPTY =
       new PublicContextDto(null, null, null, null, null, null);
+  private static final Conditions EMPTY_CONDITIONS = new Conditions(EMPTY, null);
   private static final DateTimeFormatter OBSERVED_AT =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'KST'").withZone(ZoneId.of("Asia/Seoul"));
 
   private final CatalogService catalog;
   private final MarketOfferService offers;
+  private final AgentSessionStore sessions;
 
-  public AgentMessageService(CatalogService catalog, MarketOfferService offers) {
+  public AgentMessageService(
+      CatalogService catalog, MarketOfferService offers, AgentSessionStore sessions) {
     this.catalog = catalog;
     this.offers = offers;
+    this.sessions = sessions;
   }
 
   public AgentMessageResponseDto answer(AgentMessageRequestDto request) {
@@ -92,12 +96,37 @@ public class AgentMessageService {
     if (SENSITIVE.matcher(question).find()) {
       throw new SensitiveInput();
     }
-    if (request.sessionId() != null) {
-      throw new InvalidRequestException("현재 공개 가격 질의는 단일 질문을 지원합니다.");
+    String sessionId = request.sessionId();
+    if (sessionId == null) {
+      Lookup lookup = lookup(request, EMPTY_CONDITIONS, original, question);
+      String id = sessions.create(firstValue(lookup.conditions(), EMPTY_CONDITIONS));
+      return lookup.response().withSession(id, List.of(), List.of());
     }
 
+    var session = sessions.require(sessionId);
+    synchronized (session) {
+      Conditions previous = sessions.require(sessionId).conditions;
+      Lookup lookup = lookup(request, previous, original, question);
+      Conditions current = lookup.conditions();
+      if (current == null) {
+        sessions.complete(sessionId, previous);
+        return lookup.response().withSession(sessionId, List.of(), List.of());
+      }
+      sessions.complete(sessionId, current);
+      return followUpResponse(sessionId, lookup.response(), previous, current);
+    }
+  }
+
+  public void deleteSession(String sessionId) {
+    sessions.delete(sessionId);
+  }
+
+  private Lookup lookup(
+      AgentMessageRequestDto request, Conditions previous, String original, String question) {
     var context = request.publicContext() == null ? EMPTY : request.publicContext();
-    if (!PRICE.matcher(question).find() || OTHER_INTENT.matcher(question).find()) {
+    var remembered = previous.publicContext();
+    boolean asksPrice = PRICE.matcher(question).find();
+    if ((!asksPrice && remembered.modelId() == null) || OTHER_INTENT.matcher(question).find()) {
       return clarify(context, "공개 온디맨드 단가를 확인할 GPU 모델과 조건을 입력해 주세요.", "intent");
     }
     if (OTHER_CONTRACT.matcher(question).find()
@@ -118,7 +147,10 @@ public class AgentMessageService {
             .filter(item -> item.getValue().matcher(question).find())
             .map(Map.Entry::getKey)
             .toList();
-    String systemType = systems.isEmpty() ? upper(context.systemType()) : systems.get(0);
+    String systemType =
+        systems.isEmpty()
+            ? firstValue(upper(context.systemType()), remembered.systemType())
+            : systems.get(0);
     if (systems.size() > 1 || conflict(context.systemType(), systemType)) {
       return clarify(context, "조회할 상품 구성이 여러 개거나 화면 선택과 다릅니다.", "systemType");
     }
@@ -129,7 +161,10 @@ public class AgentMessageService {
       return clarify(context, "조회할 GPU 모델 한 가지를 확인해 주세요.", "modelId");
     }
 
-    String modelId = namedModels.isEmpty() ? context.modelId() : namedModels.get(0).id();
+    String modelId =
+        namedModels.isEmpty()
+            ? firstValue(context.modelId(), remembered.modelId())
+            : namedModels.get(0).id();
     if (conflict(context.modelId(), modelId)) {
       return clarify(context, "질문의 GPU 모델과 화면에서 선택한 GPU 모델이 다릅니다.", "modelId");
     }
@@ -143,16 +178,22 @@ public class AgentMessageService {
             .filter(country -> country.getValue().matcher(original).find())
             .map(Map.Entry::getKey)
             .toList();
-    String country = nations.isEmpty() ? upper(context.countryCode()) : nations.get(0);
+    String country =
+        nations.isEmpty()
+            ? firstValue(upper(context.countryCode()), remembered.countryCode())
+            : nations.get(0);
     if (nations.size() > 1 || conflict(context.countryCode(), country)) {
       return clarify(context, "조회할 국가가 여러 개거나 화면 선택과 다릅니다.", "countryCode");
     }
 
     var count = GPU_COUNT.matcher(PER_GPU.matcher(question).replaceAll("per "));
-    Integer gpuCount = context.gpuCount();
-    if (count.find()) {
+    boolean mentionsGpuCount = count.find();
+    Integer gpuCount = firstValue(context.gpuCount(), remembered.gpuCount());
+    if (mentionsGpuCount) {
       int mentioned = Integer.parseInt(count.group(1));
-      if (mentioned == 0 || count.find() || (gpuCount != null && gpuCount != mentioned)) {
+      if (mentioned == 0
+          || count.find()
+          || (context.gpuCount() != null && context.gpuCount() != mentioned)) {
         return clarify(context, "조회할 상품의 GPU 장수를 확인해 주세요.", "gpuCount");
       }
       gpuCount = mentioned;
@@ -165,33 +206,60 @@ public class AgentMessageService {
     if (namedProviders.size() > 1) {
       return clarify(context, "사업자 한 곳을 선택하거나 사업자 이름을 빼고 질문해 주세요.", "providerIds");
     }
-    String type = upper(context.providerType());
+    if (!asksPrice
+        && namedModels.isEmpty()
+        && nations.isEmpty()
+        && systems.isEmpty()
+        && namedProviders.isEmpty()
+        && !mentionsGpuCount) {
+      return clarify(context, "확인할 공개 온디맨드 가격 조건을 입력해 주세요.", "intent");
+    }
+
+    String requestedType = upper(context.providerType());
     if (!namedProviders.isEmpty()
-        && type != null
-        && !type.equals("ALL")
-        && conflict(type, namedProviders.get(0).type())) {
+        && requestedType != null
+        && !requestedType.equals("ALL")
+        && conflict(requestedType, namedProviders.get(0).type())) {
       return clarify(context, "질문의 사업자와 화면에서 선택한 사업자 유형이 다릅니다.", "providerType");
     }
 
+    String type = firstValue(requestedType, remembered.providerType());
+    String providerId = previous.providerId();
+    if (!namedProviders.isEmpty()) {
+      ProviderDto provider = namedProviders.get(0);
+      providerId = provider.id();
+      if (requestedType == null && !"ALL".equals(type) && conflict(type, provider.type())) {
+        type = null;
+      }
+    } else if (requestedType != null && !Objects.equals(requestedType, remembered.providerType())) {
+      providerId = null;
+    }
+
     var applied = new PublicContextDto(modelId, "ON_DEMAND", country, systemType, gpuCount, type);
-    var filters = filters(applied, namedProviders);
+    var filters = filters(applied, providerId);
     var assumptions = new ArrayList<String>();
-    if (context.contractType() == null && !ON_DEMAND.matcher(question).find()) {
+    if (context.contractType() == null
+        && remembered.contractType() == null
+        && !ON_DEMAND.matcher(question).find()) {
       assumptions.add("계약 유형을 온디맨드로 적용했습니다.");
     }
-    if (!namedProviders.isEmpty()) {
-      assumptions.add("질문에 지정한 사업자: " + namedProviders.get(0).name());
+    if (providerId != null) {
+      String appliedProviderId = providerId;
+      available.providers().stream()
+          .filter(provider -> provider.id().equals(appliedProviderId))
+          .findFirst()
+          .ifPresent(provider -> assumptions.add("조회 사업자: " + provider.name()));
     }
 
     var data = offers.publicPrices(filters);
     if (data.limited()) {
       assumptions.add("조건에 맞는 전체 결과 중 일부만 표시합니다. 표본 수는 표시된 오퍼의 건수입니다.");
     }
-    return reply(model.get(), applied, data, assumptions);
+    return new Lookup(
+        reply(model.get(), applied, data, assumptions), new Conditions(applied, providerId));
   }
 
-  private static Map<String, String> filters(
-      PublicContextDto context, List<ProviderDto> providers) {
+  private static Map<String, String> filters(PublicContextDto context, String providerId) {
     var filters = new LinkedHashMap<String, String>();
     filters.put("modelId", context.modelId());
     filters.put("contractType", context.contractType());
@@ -207,34 +275,69 @@ public class AgentMessageService {
     if (context.providerType() != null) {
       filters.put("providerType", context.providerType());
     }
-    if (!providers.isEmpty()) {
-      filters.put("providerIds", providers.get(0).id());
+    if (providerId != null) {
+      filters.put("providerIds", providerId);
     }
     return filters;
   }
 
-  private static AgentMessageResponseDto clarify(
-      PublicContextDto context, String question, String field) {
-    return new AgentMessageResponseDto(
-        null,
-        "NEEDS_CLARIFICATION",
-        question,
-        context,
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(field),
-        List.of(),
-        null,
-        null,
-        null,
-        List.of(),
-        null,
-        "NOT_QUERIED",
-        null,
-        null,
-        DISCLAIMER);
+  private static Lookup clarify(PublicContextDto context, String question, String field) {
+    var response =
+        new AgentMessageResponseDto(
+            null,
+            "NEEDS_CLARIFICATION",
+            question,
+            context,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(field),
+            List.of(),
+            null,
+            null,
+            null,
+            List.of(),
+            null,
+            "NOT_QUERIED",
+            null,
+            null,
+            DISCLAIMER);
+    return new Lookup(response, null);
   }
+
+  private static AgentMessageResponseDto followUpResponse(
+      String id, AgentMessageResponseDto response, Conditions before, Conditions after) {
+    var previous = before.publicContext();
+    var current = after.publicContext();
+    var retained = new ArrayList<String>();
+    var changed = new ArrayList<String>();
+    compareCondition("modelId", previous.modelId(), current.modelId(), retained, changed);
+    compareCondition(
+        "contractType", previous.contractType(), current.contractType(), retained, changed);
+    compareCondition(
+        "countryCode", previous.countryCode(), current.countryCode(), retained, changed);
+    compareCondition("systemType", previous.systemType(), current.systemType(), retained, changed);
+    compareCondition("gpuCount", previous.gpuCount(), current.gpuCount(), retained, changed);
+    compareCondition(
+        "providerType", previous.providerType(), current.providerType(), retained, changed);
+    compareCondition("providerIds", before.providerId(), after.providerId(), retained, changed);
+    return response.withSession(id, List.copyOf(retained), List.copyOf(changed));
+  }
+
+  private static void compareCondition(
+      String field, Object before, Object after, List<String> retained, List<String> changed) {
+    if (!Objects.equals(before, after)) {
+      changed.add(field);
+    } else if (after != null) {
+      retained.add(field);
+    }
+  }
+
+  private static <T> T firstValue(T explicit, T remembered) {
+    return explicit == null ? remembered : explicit;
+  }
+
+  private record Lookup(AgentMessageResponseDto response, Conditions conditions) {}
 
   private static AgentMessageResponseDto reply(
       GpuModelDto model,

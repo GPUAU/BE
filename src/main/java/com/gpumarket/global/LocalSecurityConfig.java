@@ -42,6 +42,8 @@ public class LocalSecurityConfig {
                     .requestMatchers(
                         HttpMethod.POST, "/api/v1/cost-simulations", "/api/v1/irr-simulations")
                     .permitAll()
+                    .requestMatchers(HttpMethod.DELETE, "/api/v1/agent-sessions/*")
+                    .permitAll()
                     .anyRequest()
                     .denyAll())
         .build();
