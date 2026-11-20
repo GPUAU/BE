@@ -68,4 +68,30 @@ class ObservedHistorySelectorTest {
     assertThatThrownBy(() -> ObservedHistorySelector.select(rows, NOW))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void explainsWhetherMonthPriceOrEvidenceIsMissing() {
+    var missing = observations();
+    missing.remove(0);
+    assertThatThrownBy(() -> ObservedHistorySelector.select(missing, NOW))
+        .hasMessageContaining("2025-11")
+        .hasMessageContaining("관측 이력이 없습니다");
+    var noPrice = observations();
+    var first = noPrice.get(0);
+    noPrice.set(
+        0,
+        new ObservedHistorySelector.Observation(
+            first.observationId(), first.collectedAt(), null, null, 10L, 20L));
+    assertThatThrownBy(() -> ObservedHistorySelector.select(noPrice, NOW))
+        .hasMessageContaining("2025-11")
+        .hasMessageContaining("확정가 또는 환산 결과");
+    var noSource = observations();
+    noSource.set(
+        0,
+        new ObservedHistorySelector.Observation(
+            first.observationId(), first.collectedAt(), first.price(), "v1", null, null));
+    assertThatThrownBy(() -> ObservedHistorySelector.select(noSource, NOW))
+        .hasMessageContaining("2025-11")
+        .hasMessageContaining("검증된 가격 출처");
+  }
 }

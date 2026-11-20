@@ -50,14 +50,17 @@ public final class ObservedHistorySelector {
     for (int i = 12; i >= 1; i--) {
       YearMonth month = current.minusMonths(i);
       Observation row = months.get(month);
-      if (row == null
-          || row.price() == null
+      if (row == null) {
+        throw new IllegalArgumentException(month + "의 관측 이력이 없습니다. 연속 12개월이 필요합니다.");
+      }
+      if (row.price() == null
           || !Double.isFinite(row.price())
           || row.price() <= 0
-          || row.sourceId() == null
-          || row.evidenceId() == null
           || row.ruleVersion() == null) {
-        throw new IllegalArgumentException("최근 12개 완료 월의 가격·환산 규칙·출처가 모두 필요합니다: " + month);
+        throw new IllegalArgumentException(month + "의 확정가 또는 환산 결과를 확인할 수 없습니다.");
+      }
+      if (row.sourceId() == null || row.evidenceId() == null) {
+        throw new IllegalArgumentException(month + "의 검증된 가격 출처를 확인할 수 없습니다.");
       }
       if (rule != null && !rule.equals(row.ruleVersion())) {
         throw new IllegalArgumentException("월별 가격의 환산 규칙이 일치하지 않습니다.");
