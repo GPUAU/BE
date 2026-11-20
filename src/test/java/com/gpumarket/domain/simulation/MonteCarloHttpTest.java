@@ -95,6 +95,22 @@ class MonteCarloHttpTest {
   }
 
   @Test
+  void acceptsDirectMarketPriceAsNumber() {
+    var response = post(PRICING, pricing("{\"marketPrice12m\":4.8,\"post12Trend\":\"EASE\"}"));
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(
+            response
+                .getBody()
+                .path("result")
+                .path("pricing")
+                .path("selection")
+                .path("marketPrice12m")
+                .asDouble())
+        .isEqualTo(4.8);
+  }
+
+  @Test
   void rejectsExcessivePathsAndFractionalIntegerInputs() {
     var excessive =
         post(
@@ -106,6 +122,46 @@ class MonteCarloHttpTest {
     assertThat(excessive.getBody().path("code").asText()).isEqualTo("VALIDATION_ERROR");
     assertThat(fractional.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     assertThat(fractional.getBody().path("code").asText()).isEqualTo("INVALID_REQUEST");
+  }
+
+  @Test
+  void rejectsNumericSelectionEnums() {
+    assertMalformed(PRICING, pricing("{\"scenario\":1,\"post12Trend\":\"EASE\"}"));
+    assertMalformed(PRICING, pricing("{\"scenario\":\"1\",\"post12Trend\":\"EASE\"}"));
+    assertMalformed(PRICING, pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":1}"));
+    assertMalformed(
+        PRICING,
+        pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":\"EASE\"}")
+            .replace("\"FOLLOW_MARKET\"", "1"));
+  }
+
+  @Test
+  void rejectsStringEncodedNumbersInBothRequests() {
+    String simulation = SIMULATION.replace("\"meanBlockLength\":3", "\"meanBlockLength\":\"3\"");
+    assertMalformed(FORECAST, "{\"simulation\":" + simulation + ",\"analysisMonths\":12}");
+    assertMalformed(
+        PRICING,
+        pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":\"EASE\"}")
+            .replace("[6,8]", "[\"6\",8]"));
+    assertMalformed(PRICING, pricing("{\"marketPrice12m\":\"4.8\",\"post12Trend\":\"EASE\"}"));
+  }
+
+  @Test
+  void rejectsUnknownFieldsThatCouldSelectAnUnsupportedModelOrDataSource() {
+    assertMalformed(
+        FORECAST,
+        "{\"simulation\":" + SIMULATION + ",\"analysisMonths\":12,\"modelCode\":\"H100\"}");
+    assertMalformed(
+        PRICING,
+        pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":\"EASE\"}")
+            .replace("\"targetIrrAnnual\":0.15", "\"targetIrrAnnual\":0.15,\"isSample\":false"));
+  }
+
+  private void assertMalformed(String path, String request) {
+    var response = post(path, request);
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    assertThat(response.getBody().path("code").asText()).isEqualTo("INVALID_REQUEST");
   }
 
   private static String pricing(String selection) {

@@ -1,7 +1,11 @@
 package com.gpumarket.domain.simulation.montecarlo;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.gpumarket.domain.simulation.dto.CostSimulationRequestDto.ExactInteger;
+import com.gpumarket.domain.simulation.montecarlo.MonteCarloJson.ExactNumber;
+import com.gpumarket.domain.simulation.montecarlo.MonteCarloJson.StrictFields;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -13,47 +17,75 @@ public record MonteCarloConfig(
     @Valid @NotNull Simulation simulation,
     @Valid @NotNull Investment investment,
     @Valid @NotNull Uncertain uncertain,
-    @NotNull Double targetIrrAnnual,
-    @NotNull @Size(min = 1, max = 8) List<@NotNull Double> candidatePrices) {
+    @JsonDeserialize(using = ExactNumber.class) @NotNull Double targetIrrAnnual,
+    @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 1, max = 8)
+        List<@NotNull Double> candidatePrices)
+    implements StrictFields {
 
   public record Simulation(
       @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(1000) @Max(50000) Integer nPaths,
       @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(0) Integer seed,
-      @NotNull Double meanBlockLength,
-      @NotNull Double jumpProbPerMonth,
-      @NotNull @Size(min = 3, max = 3) List<@NotNull Double> jumpSizeTri) {}
+      @JsonDeserialize(using = ExactNumber.class) @NotNull Double meanBlockLength,
+      @JsonDeserialize(using = ExactNumber.class) @NotNull Double jumpProbPerMonth,
+      @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 3, max = 3)
+          List<@NotNull Double> jumpSizeTri)
+      implements StrictFields {}
 
   public record Investment(
       @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(1) @Max(100000) Integer gpus,
       @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(12) @Max(60) Integer months,
-      @NotNull Double capexPerGpu,
+      @JsonDeserialize(using = ExactNumber.class) @NotNull Double capexPerGpu,
       @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(0) @Max(60) Integer rampMonths,
-      @NotNull Double residualValuePct,
-      @NotNull PricingMode pricingMode) {}
+      @JsonDeserialize(using = ExactNumber.class) @NotNull Double residualValuePct,
+      @NotNull PricingMode pricingMode)
+      implements StrictFields {}
 
   public record Uncertain(
-      @NotNull @Size(min = 3, max = 3) List<@NotNull Double> utilization,
-      @NotNull @Size(min = 3, max = 3) List<@NotNull Double> capexOverrun,
-      @NotNull @Size(min = 3, max = 3) List<@NotNull Double> opexPerGpuMonth,
-      @NotNull @Size(min = 3, max = 3) List<@NotNull Double> opexAnnualInflation) {}
+      @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 3, max = 3)
+          List<@NotNull Double> utilization,
+      @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 3, max = 3)
+          List<@NotNull Double> capexOverrun,
+      @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 3, max = 3)
+          List<@NotNull Double> opexPerGpuMonth,
+      @JsonDeserialize(contentUsing = ExactNumber.class) @NotNull @Size(min = 3, max = 3)
+          List<@NotNull Double> opexAnnualInflation)
+      implements StrictFields {}
 
   public record Selection(
-      Scenario scenario, Double marketPrice12m, @NotNull Post12Trend post12Trend) {}
+      Scenario scenario,
+      @JsonDeserialize(using = ExactNumber.class) Double marketPrice12m,
+      @NotNull Post12Trend post12Trend)
+      implements StrictFields {}
 
   public enum PricingMode {
     FIXED,
-    FOLLOW_MARKET
+    FOLLOW_MARKET;
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static PricingMode parse(JsonNode value) {
+      return MonteCarloJson.enumName(value, PricingMode.class);
+    }
   }
 
   public enum Scenario {
     CONSERVATIVE,
     BASELINE,
-    OPTIMISTIC
+    OPTIMISTIC;
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static Scenario parse(JsonNode value) {
+      return MonteCarloJson.enumName(value, Scenario.class);
+    }
   }
 
   public enum Post12Trend {
     KEEP,
     EASE,
-    FLAT
+    FLAT;
+
+    @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
+    public static Post12Trend parse(JsonNode value) {
+      return MonteCarloJson.enumName(value, Post12Trend.class);
+    }
   }
 }
