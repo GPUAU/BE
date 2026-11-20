@@ -5,6 +5,7 @@ import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.HistoryEviden
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.HistoryPoint;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloMarket.MonthlyRange;
 import com.gpumarket.domain.simulation.montecarlo.MonteCarloPricing.PricingResult;
+import com.gpumarket.domain.simulation.montecarlo.ObservedHistorySelector.Observation;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -32,11 +33,13 @@ public final class MonteCarloResponseDtos {
       Metadata metadata,
       HistoryEvidence evidence,
       List<HistoryPoint> history,
-      List<MonthlyRange> monthly) {}
+      List<MonthlyRange> monthly,
+      List<Observation> observations) {}
 
   public record Pricing(
       Metadata metadata,
       Post12Trend post12Trend,
       List<MonthlyRange> monthly,
-      PricingResult pricing) {}
+      PricingResult pricing,
+      List<Observation> observations) {}
 }

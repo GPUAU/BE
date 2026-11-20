@@ -78,6 +78,45 @@ public final class MonteCarloMarket {
     }
   }
 
+  public static MarketHistory fromObservedHistory(List<HistoryPoint> points) {
+    if (points == null || points.size() < 12) {
+      throw new IllegalArgumentException("연속된 완료 월 가격 이력이 최소 12개월 필요합니다.");
+    }
+    YearMonth previous = null;
+    double[] returns = new double[points.size() - 1];
+    boolean changed = false;
+    for (int i = 0; i < points.size(); i++) {
+      HistoryPoint point = points.get(i);
+      YearMonth month = YearMonth.parse(point.month());
+      if ((previous != null && !previous.plusMonths(1).equals(month))
+          || !Double.isFinite(point.price())
+          || point.price() <= 0) {
+        throw new IllegalArgumentException("월별 이력의 연속성과 가격을 확인하세요.");
+      }
+      if (i > 0) {
+        returns[i - 1] = Math.log(point.price() / points.get(i - 1).price());
+        changed |= returns[i - 1] != 0;
+      }
+      previous = month;
+    }
+    if (!changed) {
+      throw new IllegalArgumentException("월별 관측가격에 변화가 없습니다.");
+    }
+    StringBuilder canonical = new StringBuilder();
+    points.forEach(
+        p ->
+            canonical
+                .append(p.month())
+                .append(',')
+                .append(Double.toHexString(p.price()))
+                .append('\n'));
+    return new MarketHistory(
+        points,
+        returns,
+        summarizeHistory(points, returns),
+        MonteCarloJson.sha256(canonical.toString().getBytes(StandardCharsets.UTF_8)));
+  }
+
   private static List<HistoryPoint> parseHistory(byte[] rawHistory) {
     List<String> lines = new String(rawHistory, StandardCharsets.UTF_8).lines().toList();
     if (lines.size() < 4 || !lines.get(0).equals(CSV_HEADER)) {

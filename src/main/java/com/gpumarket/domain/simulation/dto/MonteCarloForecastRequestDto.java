@@ -11,5 +11,9 @@ import jakarta.validation.constraints.NotNull;
 
 public record MonteCarloForecastRequestDto(
     @Valid @NotNull Simulation simulation,
-    @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(12) @Max(60) Integer analysisMonths)
+    @JsonDeserialize(using = ExactInteger.class) @NotNull @Min(12) @Max(60) Integer analysisMonths,
+    @Valid
+        @com.fasterxml.jackson.annotation.JsonInclude(
+            com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        ObservedHistorySource historySource)
     implements StrictFields {}

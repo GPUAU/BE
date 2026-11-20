@@ -29,7 +29,26 @@ public class MonteCarloService {
           "가격 이력은 18개월이며 실제 가격을 이용한 백테스트는 수행하지 않았습니다.",
           "분위수와 목표 IRR 달성 비율은 입력 가정과 생성된 표본을 기준으로 합니다.");
 
-  private final MarketHistory history = MonteCarloMarket.loadSampleHistory();
+  private final MarketHistory sampleHistory = MonteCarloMarket.loadSampleHistory();
+  private final ObservedMarketHistoryRepository observedRepository;
+
+  public MonteCarloService(ObservedMarketHistoryRepository observedRepository) {
+    this.observedRepository = observedRepository;
+  }
+
+  private record SelectedHistory(
+      MarketHistory history,
+      java.util.List<com.gpumarket.domain.simulation.montecarlo.ObservedHistorySelector.Observation>
+          observations,
+      com.gpumarket.domain.simulation.dto.ObservedHistorySource source) {}
+
+  private SelectedHistory select(
+      com.gpumarket.domain.simulation.dto.ObservedHistorySource source, Instant now) {
+    if (source == null) return new SelectedHistory(sampleHistory, List.of(), null);
+    var result = observedRepository.find(source.modelId(), source.offerId(), now);
+    return new SelectedHistory(result.history(), result.observations(), source);
+  }
+
   private final Semaphore running = new Semaphore(1);
 
   public Forecast forecast(MonteCarloForecastRequestDto request) {
@@ -38,7 +57,11 @@ public class MonteCarloService {
 
     return calculate(
         () -> {
-          Metadata metadata = metadata(request, simulation, request.analysisMonths());
+          Instant now = Instant.now();
+          var selected = select(request.historySource(), now);
+          var history = selected.history();
+          Metadata metadata =
+              metadata(request, simulation, request.analysisMonths(), selected, now);
           double[][] paths =
               MonteCarloMarket.generatePaths(
                   simulation, request.analysisMonths(), Post12Trend.KEEP, history.returns());
@@ -46,7 +69,8 @@ public class MonteCarloService {
               metadata,
               history.evidence(),
               history.points(),
-              MonteCarloMarket.marketRanges(paths, history.lastPrice(), FORECAST_MONTHS));
+              MonteCarloMarket.marketRanges(paths, history.lastPrice(), FORECAST_MONTHS),
+              selected.observations());
         });
   }
 
@@ -79,7 +103,10 @@ public class MonteCarloService {
 
     return calculate(
         () -> {
-          Metadata metadata = metadata(request, simulation, investment.months());
+          Instant now = Instant.now();
+          var selected = select(request.historySource(), now);
+          var history = selected.history();
+          Metadata metadata = metadata(request, simulation, investment.months(), selected, now);
           double[][] paths =
               MonteCarloMarket.generatePaths(
                   simulation, investment.months(), selection.post12Trend(), history.returns());
@@ -87,7 +114,8 @@ public class MonteCarloService {
               metadata,
               selection.post12Trend(),
               MonteCarloMarket.marketRanges(paths, history.lastPrice(), investment.months()),
-              MonteCarloPricing.calculate(config, selection, paths, history.lastPrice()));
+              MonteCarloPricing.calculate(config, selection, paths, history.lastPrice()),
+              selected.observations());
         });
   }
 
@@ -112,14 +140,26 @@ public class MonteCarloService {
     }
   }
 
-  private Metadata metadata(StrictFields request, Simulation simulation, int months) {
-    Instant runAt = Instant.now();
+  private Metadata metadata(
+      StrictFields request,
+      Simulation simulation,
+      int months,
+      SelectedHistory selected,
+      Instant runAt) {
+    boolean sample = selected.source() == null;
     return new Metadata(
-        "B300",
-        true,
-        "b300-sample-2026-11",
-        LocalDate.of(2026, 11, 1),
-        history.historyHash(),
+        sample ? "B300" : "model-" + selected.source().modelId(),
+        sample,
+        sample ? "b300-sample-2026-11" : "observed-offer-" + selected.source().offerId(),
+        sample
+            ? LocalDate.of(2026, 11, 1)
+            : selected
+                .observations()
+                .get(selected.observations().size() - 1)
+                .collectedAt()
+                .atZone(java.time.ZoneOffset.UTC)
+                .toLocalDate(),
+        selected.history().historyHash(),
         MonteCarloJson.configHash(request),
         runAt,
         "java-monte-carlo-v2",
@@ -128,7 +168,12 @@ public class MonteCarloService {
         simulation.seed(),
         simulation.nPaths(),
         months,
-        SAMPLE_WARNINGS);
+        sample
+            ? SAMPLE_WARNINGS
+            : List.of(
+                "동일 오퍼의 최근 연속 12개 완료 월 관측값을 사용한 시뮬레이션입니다.",
+                "진행 중인 월은 제외하므로 예측 기준 가격이 최신 관측가격과 다를 수 있습니다.",
+                "미래 가격은 확정값이 아니며 예측 정확도는 검증되지 않았습니다."));
   }
 
   private <T> T calculate(Supplier<T> calculation) {

@@ -44,6 +44,48 @@ class MonteCarloHttpTest {
 
   @Autowired TestRestTemplate http;
 
+  @org.springframework.boot.test.mock.mockito.MockBean
+  com.gpumarket.domain.simulation.service.ObservedMarketHistoryRepository observedRepository;
+
+  @Test
+  void observedRequestsUseSelectedHistoryForBothApis() {
+    var rows =
+        new java.util.ArrayList<
+            com.gpumarket.domain.simulation.montecarlo.ObservedHistorySelector.Observation>();
+    var current = java.time.YearMonth.now(java.time.ZoneOffset.UTC);
+    for (int i = 12; i >= 1; i--) {
+      var at = current.minusMonths(i).atDay(10).atStartOfDay().toInstant(java.time.ZoneOffset.UTC);
+      rows.add(
+          new com.gpumarket.domain.simulation.montecarlo.ObservedHistorySelector.Observation(
+              13 - i, at, 3.0 + (12 - i) * .1, "v1", 2L, 3L));
+    }
+    var selected =
+        com.gpumarket.domain.simulation.montecarlo.ObservedHistorySelector.select(
+            rows, java.time.Instant.now());
+    org.mockito.Mockito.when(
+            observedRepository.find(
+                org.mockito.ArgumentMatchers.eq(1L),
+                org.mockito.ArgumentMatchers.eq(2L),
+                org.mockito.ArgumentMatchers.any()))
+        .thenReturn(selected);
+    String source = "\"historySource\":{\"modelId\":1,\"offerId\":2}";
+    var forecast =
+        post(FORECAST, "{\"simulation\":" + SIMULATION + ",\"analysisMonths\":12," + source + "}");
+    assertThat(forecast.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(forecast.getBody().path("result").path("metadata").path("isSample").asBoolean())
+        .isFalse();
+    assertThat(forecast.getBody().path("result").path("observations").size()).isEqualTo(12);
+    var pricing =
+        post(
+            PRICING,
+            pricing("{\"scenario\":\"BASELINE\",\"post12Trend\":\"EASE\"}")
+                .replaceFirst("\\}$", "," + source + "}"));
+    assertThat(pricing.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(pricing.getBody().path("result").path("metadata").path("isSample").asBoolean())
+        .isFalse();
+    assertThat(pricing.getBody().path("result").path("observations").size()).isEqualTo(12);
+  }
+
   @Test
   void forecastsTwelveMonthsAndReportsReproducibleSampleMetadata() {
     String request = "{\"simulation\":" + SIMULATION + ",\"analysisMonths\":12}";
