@@ -40,7 +40,11 @@ public class LocalSecurityConfig {
                         "/api/v1/agent-messages")
                     .permitAll()
                     .requestMatchers(
-                        HttpMethod.POST, "/api/v1/cost-simulations", "/api/v1/irr-simulations")
+                        HttpMethod.POST,
+                        "/api/v1/cost-simulations",
+                        "/api/v1/irr-simulations",
+                        "/api/v1/monte-carlo-forecasts",
+                        "/api/v1/monte-carlo-pricing-simulations")
                     .permitAll()
                     .requestMatchers(HttpMethod.DELETE, "/api/v1/agent-sessions/*")
                     .permitAll()
