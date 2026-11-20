@@ -78,5 +78,5 @@ public class AgentSessionStore {
     }
   }
 
-  record Conditions(PublicContextDto publicContext, String providerId) {}
+  record Conditions(PublicContextDto publicContext, String providerId, boolean assumedContract) {}
 }

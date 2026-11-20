@@ -14,7 +14,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 class AgentSessionStoreTest {
   private static final Conditions CONDITIONS =
-      new Conditions(new PublicContextDto("1", "ON_DEMAND", null, null, null, null), null);
+      new Conditions(new PublicContextDto("1", "ON_DEMAND", null, null, null, null), null, false);
 
   @Test
   void expiresAtThirtyMinutesEvenAfterAFollowUp() {
