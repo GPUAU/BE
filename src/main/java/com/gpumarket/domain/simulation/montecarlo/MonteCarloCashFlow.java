@@ -64,6 +64,20 @@ final class MonteCarloCashFlow {
       flows[month] = price * revenueAtUnitPrice[month] - cost[month];
     }
 
+    int signChanges = 0;
+    int previousSign = 0;
+    for (double flow : flows) {
+      int sign = Double.compare(flow, 0.0);
+      if (sign == 0) {
+        continue;
+      }
+      if (previousSign != 0 && sign != previousSign && ++signChanges > 1) {
+        // A non-conventional cash flow can have multiple IRRs; do not choose one arbitrarily.
+        return null;
+      }
+      previousSign = sign;
+    }
+
     double lowerRate = IRR_LOW_MONTHLY;
     double upperRate = IRR_HIGH_MONTHLY;
     double lowerNpv = presentValue(flows, 1.0 + lowerRate);

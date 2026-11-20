@@ -9,6 +9,15 @@ import org.junit.jupiter.api.Test;
 
 class MonteCarloPricingTest {
   @Test
+  void refusesToReportAnArbitraryIrrForMultipleSignChanges() {
+    var investment =
+        new MonteCarloConfig.Investment(1, 60, 1000.0, 0, 1.0, MonteCarloConfig.PricingMode.FIXED);
+    var inputs = new MonteCarloPricing.ScenarioInputs(0.8, 0.0, 20.0, 1.0);
+    var cashFlow = MonteCarloCashFlow.project(investment, inputs, new double[61]);
+    assertThat(cashFlow.annualIrrAt(0.5)).isNull();
+  }
+
+  @Test
   void countsAnExactlyBreakEvenCandidateAsMeetingTheTarget() {
     var config =
         new MonteCarloConfig(
