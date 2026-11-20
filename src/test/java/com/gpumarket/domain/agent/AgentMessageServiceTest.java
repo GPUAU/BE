@@ -2,7 +2,10 @@ package com.gpumarket.domain.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.gpumarket.domain.agent.dto.AgentMessageRequestDto;
@@ -10,8 +13,10 @@ import com.gpumarket.domain.agent.dto.AgentMessageResponseDto;
 import com.gpumarket.domain.agent.dto.PublicContextDto;
 import com.gpumarket.domain.agent.service.AgentMessageService;
 import com.gpumarket.domain.agent.service.AgentMessageService.SensitiveInput;
+import com.gpumarket.domain.agent.service.AgentSessionStore;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto;
 import com.gpumarket.domain.catalog.dto.CatalogResponseDto.GpuModelDto;
+import com.gpumarket.domain.catalog.dto.CatalogResponseDto.ProviderDto;
 import com.gpumarket.domain.catalog.service.CatalogService;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
 import com.gpumarket.domain.market.service.MarketOfferService;
@@ -25,11 +30,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class AgentMessageServiceTest {
   private AgentMessageService service;
+  private MarketOfferService offers;
 
   @BeforeEach
   void initialize() {
     var catalog = mock(CatalogService.class);
-    var offers = mock(MarketOfferService.class);
+    offers = mock(MarketOfferService.class);
     var models =
         List.of(
             new GpuModelDto("1", "B300", null, null, null),
@@ -38,20 +44,18 @@ class AgentMessageServiceTest {
     when(catalog.getCatalog())
         .thenReturn(
             new CatalogResponseDto(
-                List.of(), models, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(new ProviderDto("7", "AWS", "GENERAL_CLOUD")),
+                models,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
                 List.of()));
     var empty = new PublicPriceLookupDto(List.of(), Instant.EPOCH, false);
-    when(offers.publicPrices(Map.of("modelId", "1", "contractType", "ON_DEMAND")))
-        .thenReturn(empty);
-    when(offers.publicPrices(
-            Map.of("modelId", "1", "contractType", "ON_DEMAND", "countryCode", "US")))
-        .thenReturn(empty);
-    when(offers.publicPrices(
-            Map.of("modelId", "1", "contractType", "ON_DEMAND", "countryCode", "DE")))
-        .thenReturn(empty);
-    when(offers.publicPrices(Map.of("modelId", "3", "contractType", "ON_DEMAND")))
-        .thenReturn(empty);
-    service = new AgentMessageService(catalog, offers);
+    when(offers.publicPrices(anyMap())).thenReturn(empty);
+    service = new AgentMessageService(catalog, offers, new AgentSessionStore());
   }
 
   @Test
@@ -87,6 +91,91 @@ class AgentMessageServiceTest {
   @Test
   void treatsPerOneGpuAsAUnitInsteadOfAnOfferConfiguration() {
     assertThat(answer("B300 on-demand price per 1 GPU").appliedConditions().gpuCount()).isNull();
+  }
+
+  @Test
+  void followUpChangesOnlyTheCountryAndKeepsTheModelAndContract() {
+    var first = answer("B300 미국 온디맨드 가격");
+
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), "그럼 독일은요?", null));
+
+    assertThat(next.appliedConditions().countryCode()).isEqualTo("DE");
+    assertThat(next.retainedConditions()).containsExactly("modelId", "contractType");
+    assertThat(next.changedConditions()).containsExactly("countryCode");
+  }
+
+  @Test
+  void modelOnlyReplyFinishesClarificationWithTheCountryFromTheFirstTurn() {
+    var first = answer("미국 가격 알려줘");
+    assertThat(first.clarificationFields()).containsExactly("modelId");
+    assertThat(first.assumptions()).anyMatch(value -> value.contains("온디맨드"));
+
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), "B300", null));
+
+    assertThat(next.sampleStatus()).isEqualTo("QUERIED");
+    assertThat(next.assumptions()).anyMatch(value -> value.contains("온디맨드"));
+    assertThat(next.retainedConditions()).contains("countryCode");
+    verify(offers)
+        .publicPrices(Map.of("modelId", "1", "contractType", "ON_DEMAND", "countryCode", "US"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"그중 GPU 특화 사업자만", "GPU 특화 사업자 가격은?"})
+  void followUpChangesProviderTypeAndDropsAnIncompatibleNamedProvider(String message) {
+    var first = answer("B300 AWS 미국 온디맨드 가격");
+
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), message, null));
+
+    assertThat(next.changedConditions()).contains("providerType", "providerIds");
+    verify(offers)
+        .publicPrices(
+            Map.of(
+                "modelId",
+                "1",
+                "contractType",
+                "ON_DEMAND",
+                "countryCode",
+                "US",
+                "providerType",
+                "GPU_SPECIALIST"));
+  }
+
+  @Test
+  void explicitCompatibleProviderTypeDoesNotDropTheNamedProvider() {
+    var first = answer("B300 AWS 미국 온디맨드 가격");
+    var context = new PublicContextDto(null, null, null, null, null, "GENERAL_CLOUD");
+
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), "이 조건으로요", context));
+
+    assertThat(next.retainedConditions()).contains("providerIds");
+    verify(offers)
+        .publicPrices(
+            Map.of(
+                "modelId",
+                "1",
+                "contractType",
+                "ON_DEMAND",
+                "countryCode",
+                "US",
+                "providerType",
+                "GENERAL_CLOUD",
+                "providerIds",
+                "7"));
+  }
+
+  @Test
+  void unrelatedQuestionWithACountryDoesNotQueryOrOverwriteSessionConditions() {
+    var first = answer("B300 독일 온디맨드 가격");
+
+    var unrelated =
+        service.answer(new AgentMessageRequestDto(first.sessionId(), "미국 수도는 어디야?", null));
+
+    assertThat(unrelated.sampleStatus()).isEqualTo("NOT_QUERIED");
+    verify(offers)
+        .publicPrices(Map.of("modelId", "1", "contractType", "ON_DEMAND", "countryCode", "DE"));
+    verifyNoMoreInteractions(offers);
+    var next = service.answer(new AgentMessageRequestDto(first.sessionId(), "가격 다시 알려줘", null));
+    assertThat(next.appliedConditions().countryCode()).isEqualTo("DE");
   }
 
   @Test

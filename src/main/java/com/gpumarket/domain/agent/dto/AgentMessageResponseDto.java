@@ -26,6 +26,29 @@ public record AgentMessageResponseDto(
     Instant asOf,
     String disclaimer) {
 
+  public AgentMessageResponseDto withSession(
+      String id, List<String> retained, List<String> changed) {
+    return new AgentMessageResponseDto(
+        id,
+        status,
+        answer,
+        appliedConditions,
+        assumptions,
+        retained,
+        changed,
+        clarificationFields,
+        results,
+        history,
+        contracts,
+        availability,
+        sources,
+        sampleCounts,
+        sampleStatus,
+        aggregationUnit,
+        asOf,
+        disclaimer);
+  }
+
   public record AgentResultDto(
       String offerId,
       String observationId,
