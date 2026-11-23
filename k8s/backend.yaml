@@ -10,6 +10,11 @@ spec:
   selector:
     matchLabels:
       app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
@@ -47,7 +52,8 @@ spec:
               cpu: 250m
               memory: 768Mi
             limits:
-              cpu: "1"
+              # 팀 쿼터 limits.cpu 2: FE 250m + BE 500m + 롤링 업데이트용 새 BE 500m + collector Job 500m = 1.75
+              cpu: 500m
               memory: 1Gi
           startupProbe:
             tcpSocket:
