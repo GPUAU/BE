@@ -10,3 +10,7 @@ build
 *.pfx
 *.jks
 *.keystore
+.github
+k8s
+scripts
+*.md
