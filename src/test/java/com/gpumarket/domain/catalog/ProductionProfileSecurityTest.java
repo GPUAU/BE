@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.gpumarket.domain.catalog.controller.CatalogController;
 import com.gpumarket.domain.catalog.service.CatalogService;
+import com.gpumarket.global.DeploySecurityConfig;
 import com.gpumarket.global.LocalSecurityConfig;
 import com.gpumarket.global.SecurityConfig;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(CatalogController.class)
-@Import({SecurityConfig.class, LocalSecurityConfig.class})
+@Import({SecurityConfig.class, LocalSecurityConfig.class, DeploySecurityConfig.class})
 @ActiveProfiles({"local", "deploy"})
 class ProductionProfileSecurityTest {
   @Autowired MockMvc mvc;
