@@ -8,7 +8,11 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice(
-    assignableTypes = {CostSimulationController.class, IrrSimulationController.class})
+    assignableTypes = {
+      CostSimulationController.class,
+      IrrSimulationController.class,
+      DataCenterSimulationController.class
+    })
 class SimulationInputExceptionHandler {
   @ExceptionHandler(CostInputException.class)
   ResponseEntity<ApiResponse<Void>> invalidCost(CostInputException exception) {
