@@ -119,6 +119,106 @@ class CostSimulationApiTest {
         .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
   }
 
+  @Test
+  void separatesAssetLivesAndDoesNotAddDepreciationToCapitalRecovery() throws Exception {
+    var input = assetExample();
+    submit(input)
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.result.annualCost").value("124000.000000"))
+        .andExpect(
+            jsonPath("$.result.appliedAssumptions.annualCapitalRecoveryUsd").value("90000.000000"))
+        .andExpect(
+            jsonPath("$.result.appliedAssumptions.annualStraightLineDepreciationUsd")
+                .value("90000.000000"))
+        .andExpect(jsonPath("$.result.appliedAssumptions.assetSpecificLives").value(true))
+        .andExpect(
+            jsonPath("$.result.appliedAssumptions.capitalAssets[1].usefulLifeYears").value(14))
+        .andExpect(jsonPath("$.result.formulaVersion").value("tco-asset-lives-2"));
+  }
+
+  @Test
+  void validatesResidualAgainstEachAssetAndRejectsMixedOrHiddenAssumptions() throws Exception {
+    var tooHigh = assetExample();
+    ((ObjectNode) tooHigh.path("items").get(3)).put("residualValueUsd", "140001");
+    submit(tooHigh).andExpect(status().isUnprocessableEntity());
+    var mixed = assetExample();
+    ((ObjectNode) mixed.path("items").get(3)).remove("usefulLifeYears");
+    submit(mixed).andExpect(status().isUnprocessableEntity());
+    var doubleResidual = assetExample();
+    ((ObjectNode) doubleResidual.path("assumptions")).put("residualValueUsd", "100");
+    submit(doubleResidual).andExpect(status().isUnprocessableEntity());
+    var hidden = assetExample();
+    ((ObjectNode) hidden.path("items").get(2)).put("usefulLifeYears", 5);
+    submit(hidden).andExpect(status().isUnprocessableEntity());
+    var fractional = assetExample();
+    ((ObjectNode) fractional.path("items").get(0)).put("usefulLifeYears", 4.5);
+    submit(fractional).andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void handlesAssetResidualsInUsdAfterKrwConversion() throws Exception {
+    var input = assetExample();
+    input.put("inputFxKrwPerUsd", "1000");
+    ((ObjectNode) input.path("items").get(3))
+        .put("amount", "140000000")
+        .put("currency", "KRW")
+        .put("residualValueUsd", "14000");
+    submit(input)
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$.result.appliedAssumptions.acquisitionCostUsd").value("540000.000000"))
+        .andExpect(
+            jsonPath("$.result.appliedAssumptions.annualCapitalRecoveryUsd").value("89000.000000"));
+  }
+
+  @Test
+  void preservesMonthlyElectricityAndFinancingWithDifferentAssetLives() throws Exception {
+    var input = assetExample();
+    ((ObjectNode) input.path("assumptions"))
+        .put("calendarMonth", "2028-02")
+        .put("annualInterestRate", "0.1")
+        .put("interestRateType", "ASSUMED");
+    ((ArrayNode) input.path("items"))
+        .addObject()
+        .put("itemType", "FINANCING")
+        .put("status", "USER_INPUT");
+    input.put("inputFxKrwPerUsd", "1000");
+    input.putObject("electricity").put("itPowerKw", "10").put("pue", "1.2").put("krwPerKwh", "100");
+    var result =
+        submit(input)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.result.periodHours").value(696))
+            .andExpect(jsonPath("$.result.periodElectricityCost").value("835.200000"))
+            .andReturn();
+    var values = json.readTree(result.getResponse().getContentAsString()).path("result");
+    double expectedCapital =
+        400000 * .1 / (1 - Math.pow(1.1, -5)) + 140000 * .1 / (1 - Math.pow(1.1, -14));
+    org.junit.jupiter.api.Assertions.assertEquals(
+        expectedCapital,
+        values.path("appliedAssumptions").path("annualCapitalRecoveryUsd").asDouble(),
+        .000001);
+    org.junit.jupiter.api.Assertions.assertEquals(
+        (expectedCapital + 34000) / 12 + 835.2, values.path("periodCost").asDouble(), .000001);
+  }
+
+  private ObjectNode assetExample() throws Exception {
+    var input = example();
+    ((ObjectNode) input.path("assumptions")).put("costProfile", "SCREEN_SCENARIO");
+    ((ObjectNode) input.path("items").get(0))
+        .put("usefulLifeYears", 5)
+        .put("residualValueUsd", "0");
+    ((ArrayNode) input.path("items"))
+        .addObject()
+        .put("itemType", "RACK_FACILITY")
+        .put("status", "USER_INPUT")
+        .put("amount", "140000")
+        .put("currency", "USD")
+        .put("period", "ONE_TIME")
+        .put("usefulLifeYears", 14)
+        .put("residualValueUsd", "0");
+    return input;
+  }
+
   private ResultActions submit(ObjectNode input) throws Exception {
     return mvc.perform(
         post("/api/v1/cost-simulations")

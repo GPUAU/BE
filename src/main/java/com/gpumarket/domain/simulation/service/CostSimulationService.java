@@ -118,9 +118,17 @@ public class CostSimulationService {
     if (request.electricity() != null) missing.remove(ItemType.ELECTRICITY);
     if (!missing.isEmpty()) warnings.add("INCOMPLETE_COST_MARGIN_MAY_BE_OVERSTATED");
 
-    var growth = ONE.add(usedRate).pow(assumptions.depreciationYears(), PRECISION);
-    var crf = capitalRecoveryFactor(usedRate, assumptions.depreciationYears(), growth);
-    var capital = acquisition.subtract(residual.divide(growth, PRECISION)).multiply(crf, PRECISION);
+    var capitalResult =
+        CapitalCostCalculator.calculate(
+            request.items(),
+            request.inputFxKrwPerUsd(),
+            usedRate,
+            assumptions.depreciationYears(),
+            residual,
+            scenario);
+    var crf = capitalResult.aggregateFactor();
+    var capital = capitalResult.annualRecovery();
+    residual = capitalResult.residual();
     var annualOperating =
         operating.add(electricityHourly.multiply(YEAR_HOURS, PRECISION), PRECISION);
     var annual = capital.add(annualOperating, PRECISION);
@@ -155,8 +163,10 @@ public class CostSimulationService {
         periodHours,
         decimal(billablePeriod, 6),
         decimal(periodElectricity, 6),
-        scenario ? "tco-draft-1-scenario" : "tco-draft-1",
-        "연 자본회수분 = (취득비 − 잔존가치의 현재가치) × 자본회수계수. "
+        capitalResult.assetSpecific()
+            ? "tco-asset-lives-2"
+            : scenario ? "tco-draft-1-scenario" : "tco-draft-1",
+        "연 자본회수분 = 각 자산의 (취득비 − 잔존가치 현재가치) × CRF 합계. 정액 감가상각비는 별도 참고이며 중복 합산하지 않음. "
             + "시간 원가 = 기간 원가 ÷ 유료 GPU 시간. "
             + (pricing.method() == PricingMethod.REVENUE_MARGIN
                 ? "후보가 = 원가 ÷ (1 − 이익률)."
@@ -169,13 +179,16 @@ public class CostSimulationService {
             !hasCapital ? InterestRateType.NOT_APPLIED : rateType,
             loanRate != null,
             request.inputFxKrwPerUsd() == null ? null : request.inputFxKrwPerUsd().toPlainString(),
-            decimal(crf, 12),
+            crf == null ? null : decimal(crf, 12),
             decimal(acquisition, 6),
             decimal(annualOperating, 6),
             decimal(operating, 6),
             decimal(capital, 6),
             decimal(residual, 6),
-            assumptions.calendarMonth()),
+            assumptions.calendarMonth(),
+            decimal(capitalResult.annualDepreciation(), 6),
+            capitalResult.assets(),
+            capitalResult.assetSpecific()),
         missing.isEmpty() ? "COMPLETE" : "INCOMPLETE",
         List.copyOf(missing),
         List.copyOf(warnings),
