@@ -7,3 +7,8 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+
+# 지표·헬스는 API 포트(8080)와 분리된 관리 포트로만 연다. Ingress·FE 프록시는 이 포트로 가지 않는다.
+management:
+  server:
+    port: 8081
