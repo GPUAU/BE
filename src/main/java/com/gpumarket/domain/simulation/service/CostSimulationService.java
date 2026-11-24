@@ -359,7 +359,8 @@ public class CostSimulationService {
                                     positive ? "OK" : "UNAVAILABLE",
                                     positive ? null : "NON_POSITIVE_MARKET_PRICE",
                                     offer.collectedAt(),
-                                    ids);
+                                    ids,
+                                    Long.toString(offer.providerId()));
                               })
                           .toList();
                   return new MarketGroup(

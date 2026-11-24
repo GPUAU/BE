@@ -72,5 +72,6 @@ public record CostSimulationResponseDto(
       String status,
       String reason,
       Instant collectedAt,
-      List<String> evidenceIds) {}
+      List<String> evidenceIds,
+      String providerId) {}
 }
