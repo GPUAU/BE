@@ -42,7 +42,19 @@ public record CostSimulationResponseDto(
       String annualOperatingCostExcludingMeteredElectricityUsd,
       String annualCapitalRecoveryUsd,
       String residualValueUsd,
-      String calendarMonth) {}
+      String calendarMonth,
+      String annualStraightLineDepreciationUsd,
+      List<CapitalAsset> capitalAssets,
+      boolean assetSpecificLives) {}
+
+  public record CapitalAsset(
+      ItemType itemType,
+      int usefulLifeYears,
+      String acquisitionCostUsd,
+      String residualValueUsd,
+      String capitalRecoveryFactor,
+      String annualCapitalRecoveryUsd,
+      String annualStraightLineDepreciationUsd) {}
 
   public record MarketComparison(String status, String reason, List<MarketGroup> groups) {}
 

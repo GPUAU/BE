@@ -82,7 +82,9 @@ public record CostSimulationRequestDto(
       @Size(max = 100) String region,
       LocalDate referenceDate,
       @Size(max = 2048) String sourceUrl,
-      ItemType includedInItemType) {
+      ItemType includedInItemType,
+      @JsonDeserialize(using = ExactInteger.class) @Positive @Max(100) Integer usefulLifeYears,
+      @PositiveOrZero @Digits(integer = 16, fraction = 8) BigDecimal residualValueUsd) {
     @JsonAnySetter
     void unsupported(String name, JsonNode value) {
       rejectUnknown();
