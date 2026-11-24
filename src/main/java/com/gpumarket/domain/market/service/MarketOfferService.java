@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -121,15 +122,35 @@ public class MarketOfferService {
         if (sources.isEmpty()) {
           continue;
         }
-        if (items.size() == PUBLIC_PRICE_LIMIT) {
-          return new PublicPriceLookupDto(items, asOf, true);
-        }
         items.add(publicPrice(row, related, sources));
       }
       if (found.size() < PUBLIC_PRICE_BATCH_SIZE) {
-        return new PublicPriceLookupDto(items, asOf, false);
+        return new PublicPriceLookupDto(
+            cheapestFirst(items, PUBLIC_PRICE_LIMIT), asOf, items.size() > PUBLIC_PRICE_LIMIT);
       }
       params.put("afterId", number(found.get(found.size() - 1), "offer_id"));
+    }
+  }
+
+  /** 공개가격 답변은 오퍼 번호 순서가 아니라 GPU·시간 가격이 낮은 순으로 고른다(가격 없음은 뒤로). */
+  static List<PublicPriceDto> cheapestFirst(List<PublicPriceDto> items, int limit) {
+    return items.stream()
+        .sorted(
+            Comparator.comparing(
+                (PublicPriceDto item) -> parsePrice(item.priceUsdGpuHour()),
+                Comparator.nullsLast(Comparator.naturalOrder())))
+        .limit(limit)
+        .toList();
+  }
+
+  private static BigDecimal parsePrice(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    try {
+      return new BigDecimal(value);
+    } catch (NumberFormatException e) {
+      return null;
     }
   }
 
