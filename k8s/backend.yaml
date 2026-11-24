@@ -52,8 +52,8 @@ spec:
               cpu: 250m
               memory: 768Mi
             limits:
-              # 팀 쿼터 limits.cpu 2: FE 250m + BE 500m + 롤링 업데이트용 새 BE 500m + collector Job 500m = 1.75
-              cpu: 500m
+              # 팀 쿼터 limits.cpu 4 (2026-11-24 4x8로 증설): FE 250m + BE 1 + 롤링 업데이트용 새 BE 1 = 2.25
+              cpu: "1"
               memory: 1Gi
           startupProbe:
             tcpSocket:
