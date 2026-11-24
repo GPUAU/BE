@@ -315,13 +315,26 @@ public class CostSimulationService {
   }
 
   private MarketComparison compare(CostSimulationRequestDto request, BigDecimal hourly) {
-    var filters = request.marketFilters();
+    return compareWithScope(
+        request.modelId(), request.assumptions().gpuCount(), request.marketFilters(), hourly);
+  }
+
+  MarketComparison compareDataCenter(String modelId, MarketFilters filters, BigDecimal hourly) {
+    if (filters == null)
+      return new MarketComparison("NOT_REQUESTED", "MARKET_FILTERS_NOT_PROVIDED", List.of());
+    if (modelId == null || filters.gpuCount() == null)
+      throw invalid("marketFilters", "비교 GPU 모델과 상품 GPU 수를 선택하세요.");
+    validateModel(modelId, "modelId");
+    return compareWithScope(modelId, filters.gpuCount(), filters, hourly);
+  }
+
+  private MarketComparison compareWithScope(
+      String modelId, int gpuCount, MarketFilters filters, BigDecimal hourly) {
     if (filters == null)
       return new MarketComparison("NOT_REQUESTED", "MARKET_FILTERS_NOT_PROVIDED", List.of());
 
     var groups =
-        comparableMarketGroups(request.modelId(), request.assumptions().gpuCount(), filters, false)
-            .stream()
+        comparableMarketGroups(modelId, gpuCount, filters, false).stream()
             .map(
                 group -> {
                   var sources = new LinkedHashMap<String, Map<String, Object>>();
@@ -346,7 +359,8 @@ public class CostSimulationService {
                                     positive ? "OK" : "UNAVAILABLE",
                                     positive ? null : "NON_POSITIVE_MARKET_PRICE",
                                     offer.collectedAt(),
-                                    ids);
+                                    ids,
+                                    Long.toString(offer.providerId()));
                               })
                           .toList();
                   return new MarketGroup(

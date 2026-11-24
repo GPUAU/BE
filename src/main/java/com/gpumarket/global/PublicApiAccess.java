@@ -31,6 +31,7 @@ final class PublicApiAccess {
             "/api/v1/exchange-rate-simulations",
             "/api/v1/agent-messages",
             "/api/v1/cost-simulations",
+            "/api/v1/data-center-simulations",
             "/api/v1/irr-simulations",
             "/api/v1/monte-carlo-forecasts",
             "/api/v1/monte-carlo-pricing-simulations")
