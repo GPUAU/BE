@@ -29,6 +29,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: metrics          # Actuator 관리 포트 (health·prometheus만)
+              containerPort: 8081
           env:
             - name: SPRING_PROFILES_ACTIVE
               value: deploy
@@ -61,8 +63,9 @@ spec:
             periodSeconds: 5
             failureThreshold: 36
           readinessProbe:
-            tcpSocket:
-              port: 8080
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
@@ -83,3 +86,6 @@ spec:
     - name: http
       port: 80
       targetPort: 8080
+    - name: metrics
+      port: 8081
+      targetPort: 8081

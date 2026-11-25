@@ -1,0 +1,17 @@
+# Prometheus(kube-prometheus-stack)가 BE의 /actuator/prometheus를 30초마다 수집한다.
+# release 라벨이 없으면 수집되지 않는다. 다른 Namespace 수집·honorLabels는 정책상 거부된다.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+  namespace: u1-3
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+    - port: metrics
+      path: /actuator/prometheus
+      interval: 30s

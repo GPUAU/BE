@@ -3,6 +3,7 @@ package com.gpumarket.global;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
@@ -23,6 +24,13 @@ public class DeploySecurityConfig {
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(
             auth -> {
+              // 관리 포트(8081)의 health·prometheus만 허용 (클러스터 내부 프로브·Prometheus 수집용).
+              auth.requestMatchers(
+                      HttpMethod.GET,
+                      "/actuator/health",
+                      "/actuator/health/**",
+                      "/actuator/prometheus")
+                  .permitAll();
               PublicApiAccess.permitPublicApis(auth);
               auth.anyRequest().denyAll();
             })
