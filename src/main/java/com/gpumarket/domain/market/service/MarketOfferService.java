@@ -17,7 +17,6 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -42,7 +41,6 @@ import org.springframework.web.server.ResponseStatusException;
 @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
 public class MarketOfferService {
   private static final String DISCLAIMER = "공개 관측 가격이며 실제 거래가와 다를 수 있습니다.";
-  private static final int FRESH_HOURS = 48;
   private static final int PUBLIC_PRICE_BATCH_SIZE = 100;
   private static final int PUBLIC_PRICE_LIMIT = 5;
   private static final List<String> TEXT_FILTERS =
@@ -67,12 +65,8 @@ public class MarketOfferService {
   public Map<String, Object> list(Map<String, String> input) {
     var filters = filters(input, false);
     int limit = input.containsKey("limit") ? integer(input.get("limit"), "limit", 1, 100) : 50;
-    boolean includeStale = Boolean.TRUE.equals(filters.applied().get("includeStale"));
     var cursor = cursor(input.get("cursor"), filters.applied());
     var params = query(filters, cursor.asOf());
-    if (!includeStale) {
-      params.put("cutoff", utc(cursor.asOf().minus(FRESH_HOURS, ChronoUnit.HOURS)));
-    }
     params.put("afterId", cursor.afterId());
     params.put("pageSize", limit + 1);
     var fetched = repository.offers(params);
@@ -101,7 +95,7 @@ public class MarketOfferService {
   public PublicPriceLookupDto publicPrices(Map<String, String> input) {
     Instant asOf = Instant.now();
     var params = query(filters(input, false), asOf);
-    params.put("publicPriceCutoff", utc(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)));
+    params.put("publicPricesOnly", true);
     params.put("pageSize", PUBLIC_PRICE_BATCH_SIZE);
     var items = new ArrayList<PublicPriceDto>();
     while (true) {
@@ -335,7 +329,6 @@ public class MarketOfferService {
     }
     if (exclusion != null) {
       return switch (exclusion) {
-        case "staleOffers" -> "COMMITMENT_PRICE_STALE";
         case "notFoundOffers" -> "COMMITMENT_PRICE_NOT_AVAILABLE";
         case "nonExactOffers" -> "COMMITMENT_PRICE_NOT_EXACT";
         default -> "COMMITMENT_PRICE_MISSING";
@@ -448,8 +441,8 @@ public class MarketOfferService {
             "same-region-config-v1",
             "aggregationVersion",
             "provider-lowest-v1",
-            "freshnessHours",
-            FRESH_HOURS),
+            "ageExclusionEnabled",
+            false),
         "disclaimer",
         DISCLAIMER);
   }
@@ -555,9 +548,6 @@ public class MarketOfferService {
     }
     if (row.get("observation_id") == null) {
       return "missingPriceOffers";
-    }
-    if (confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS))) {
-      return "staleOffers";
     }
     if (!"firm".equals(row.get("price_certainty"))) {
       return "nonExactOffers";
@@ -739,7 +729,7 @@ public class MarketOfferService {
             "evaluatedAt",
             asOf,
             "ruleVersion",
-            "48h-v1"),
+            "observation-time-v2"),
         "comparison",
         map(
             "type",
@@ -867,7 +857,7 @@ public class MarketOfferService {
     if (confirmedAt == null) {
       return "UNKNOWN";
     }
-    return confirmedAt.isBefore(asOf.minus(FRESH_HOURS, ChronoUnit.HOURS)) ? "STALE" : "CURRENT";
+    return "CURRENT";
   }
 
   private static String certainty(Map<String, Object> row) {

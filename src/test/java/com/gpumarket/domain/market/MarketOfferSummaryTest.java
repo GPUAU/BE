@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 
 class MarketOfferSummaryTest {
   @Test
-  void separatesRegionsAndConfigurationsAndCountsOnlyRecentExactPrices() {
+  void separatesRegionsAndConfigurationsAndCountsExactPricesRegardlessOfAge() {
     var repository = mock(MarketOfferRepository.class);
     var service = new MarketOfferService(repository, mock(ExchangeService.class));
     var now = Instant.now();
@@ -48,15 +48,14 @@ class MarketOfferSummaryTest {
     var groups = (List<?>) result.get("groups");
     assertThat(groups).hasSize(3);
     var east = (Map<?, ?>) groups.get(0);
-    assertThat(east.get("minimum")).isEqualTo("4.0");
-    assertThat(east.get("median")).isEqualTo("4.5");
+    assertThat(east.get("minimum")).isEqualTo("1.0");
+    assertThat(east.get("median")).isEqualTo("4.0");
     assertThat(east.get("maximum")).isEqualTo("5.0");
     assertThat(east.get("sampleCounts"))
         .isEqualTo(
-            Map.of("providerCount", 2, "productCount", 2, "offerCount", 3, "observationCount", 3));
+            Map.of("providerCount", 3, "productCount", 3, "offerCount", 4, "observationCount", 4));
     var excluded = (Map<?, ?>) result.get("excludedSummary");
-    for (String reason :
-        List.of("staleOffers", "nonExactOffers", "notFoundOffers", "incomparableOffers")) {
+    for (String reason : List.of("nonExactOffers", "notFoundOffers", "incomparableOffers")) {
       assertThat(excluded.get(reason)).isEqualTo(1);
     }
   }

@@ -450,9 +450,7 @@ public class AgentMessageService {
             items.stream().map(PublicPriceDto::offerId).distinct().count(),
             items.stream().map(PublicPriceDto::observationId).distinct().count());
     String answer =
-        items.isEmpty()
-            ? "조회한 범위에서 최근 48시간 안에 확인한 출처 있는 온디맨드 확정가를 찾지 못했습니다."
-            : describe(model, items);
+        items.isEmpty() ? "조회한 범위에서 출처가 확인된 온디맨드 확정가를 찾지 못했습니다." : describe(model, items);
     return new AgentMessageResponseDto(
         null,
         items.isEmpty() ? "NO_DATA" : "ANSWERED",

@@ -104,7 +104,10 @@ public class MarketAvailabilityService {
         time(row, "first_price_observed_at"),
         MarketOfferService.observation(row, related, null),
         new FreshnessDto(
-            MarketOfferService.freshness(lastSuccess, asOf), lastSuccess, asOf, "48h-v1"));
+            MarketOfferService.freshness(lastSuccess, asOf),
+            lastSuccess,
+            asOf,
+            "observation-time-v2"));
   }
 
   private static MarketOfferService.Related evidenceAt(

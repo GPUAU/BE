@@ -143,12 +143,7 @@ WHERE true
         coalesce(lower(f.payment_option), CASE WHEN f.contract_type IN ('spot', 'on_demand')
              THEN 'not_applicable' ELSE 'unknown' END) = lower(:paymentOption)
         """);
-    append(sql, parameters, "cutoff", "(o.checked_at IS NULL OR o.checked_at >= :cutoff)");
-    append(
-        sql,
-        parameters,
-        "publicPriceCutoff",
-        "o.disclosure_status = 'public' AND o.checked_at >= :publicPriceCutoff");
+    append(sql, parameters, "publicPricesOnly", "o.disclosure_status = 'public'");
     sql.append(" ORDER BY f.offer_id");
     if (parameters.containsKey("pageSize")) {
       sql.append(" LIMIT :pageSize");

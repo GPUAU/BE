@@ -59,7 +59,7 @@ class ContractComparisonTest {
   }
 
   @Test
-  void refusesStalePricesAndIncompatibleOrAmbiguousBaselines() {
+  void acceptsOlderPricesAndRejectsIncompatibleOrAmbiguousBaselines() {
     var stale = offer(3, "commitment", "6");
     stale.put("confirmed_at", Instant.now().minus(49, ChronoUnit.HOURS));
     var incompatible = offer(4, "commitment", "5");
@@ -69,8 +69,8 @@ class ContractComparisonTest {
         .thenReturn(List.of(offer(1, "on_demand", "10"), offer(2, "on_demand", "9"), incompatible));
 
     var first = service.contracts(20, Map.of());
-    assertThat(first.items().get(1).freshness()).isEqualTo("STALE");
-    assertThat(first.discounts().get(0).reason()).isEqualTo("COMMITMENT_PRICE_STALE");
+    assertThat(first.items().get(1).freshness()).isEqualTo("CURRENT");
+    assertThat(first.discounts().get(0).reason()).isNull();
     assertThat(first.discounts().get(1).reason()).isEqualTo("CONDITIONS_NOT_COMPARABLE");
     assertThat(service.contracts(20, Map.of()).discounts().get(0).reason())
         .isEqualTo("AMBIGUOUS_BASE_PRICE");
