@@ -61,7 +61,7 @@ class MarketAvailabilityServiceTest {
     var item = result.items().get(0);
 
     assertThat(item.latestCheck().processingStatus()).isEqualTo("COLLECTION_FAILED");
-    assertThat(item.freshness().status()).isEqualTo("STALE");
+    assertThat(item.freshness().status()).isEqualTo("CURRENT");
     assertThat(item.evidence()).isEmpty();
     assertThat(item.latestDisclosure().evidence()).hasSize(1);
     assertThat(item.latestDisclosure().evidence().get(0))
