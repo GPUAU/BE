@@ -1,5 +1,7 @@
 package com.gpumarket.global;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gpumarket.global.api.ApiErrorResponder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -18,8 +20,12 @@ import org.springframework.security.web.SecurityFilterChain;
 @Profile("deploy & !local & !prod & !production")
 public class DeploySecurityConfig {
   @Bean
-  SecurityFilterChain deploySecurityFilterChain(HttpSecurity http) throws Exception {
+  SecurityFilterChain deploySecurityFilterChain(HttpSecurity http, ObjectMapper mapper)
+      throws Exception {
+    var errors = new ApiErrorResponder(mapper);
     return http.csrf(csrf -> csrf.disable())
+        // 막힌 요청도 빈 403 대신 {isSuccess:false, code, message}로 (ApiErrorResponder)
+        .exceptionHandling(e -> e.authenticationEntryPoint(errors).accessDeniedHandler(errors))
         .sessionManagement(
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(

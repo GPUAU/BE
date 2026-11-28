@@ -1,6 +1,7 @@
 package com.gpumarket.global.api;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.gpumarket.global.api.code.BaseErrorCode;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -27,6 +28,15 @@ public record ApiResponse<T>(
 
   public static ApiResponse<Void> failure(String code, String message) {
     return new ApiResponse<>(false, code, message, null, metadata(), null);
+  }
+
+  public static ApiResponse<Void> failure(BaseErrorCode code) {
+    return failure(code.getCode(), code.getMessage());
+  }
+
+  public static ApiResponse<Void> failure(BaseErrorCode code, String message) {
+    return failure(
+        code.getCode(), message == null || message.isBlank() ? code.getMessage() : message);
   }
 
   public static ApiResponse<Void> validationFailure(List<ErrorDetail> errors) {

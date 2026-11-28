@@ -1,14 +1,14 @@
 package com.gpumarket.domain.collection.dto;
 
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
 import java.util.Set;
-import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
-import org.springframework.web.server.ResponseStatusException;
 
 public record CollectionRunsRequestDto(
     OffsetDateTime from,
@@ -25,7 +25,7 @@ public record CollectionRunsRequestDto(
   public static CollectionRunsRequestDto parse(MultiValueMap<String, String> input) {
     if (!FIELDS.containsAll(input.keySet())
         || input.values().stream().anyMatch(values -> values.size() != 1)) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "지원하지 않거나 중복된 수집 실행 조회 조건입니다.");
+      throw new GeneralException(ErrorStatus.INVALID_REQUEST, "지원하지 않거나 중복된 수집 실행 조회 조건입니다.");
     }
 
     String sourceText = input.getFirst("sourceId");
@@ -46,8 +46,8 @@ public record CollectionRunsRequestDto(
       }
       return new CollectionRunsRequestDto(from, to, source, state, limit, input.getFirst("cursor"));
     } catch (DateTimeParseException | NumberFormatException e) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "시각은 ISO 8601, 출처 ID와 페이지 크기는 정수로 입력해 주세요.");
+      throw new GeneralException(
+          ErrorStatus.INVALID_REQUEST, "시각은 ISO 8601, 출처 ID와 페이지 크기는 정수로 입력해 주세요.");
     }
   }
 

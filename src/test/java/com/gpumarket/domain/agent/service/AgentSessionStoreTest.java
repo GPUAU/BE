@@ -7,10 +7,11 @@ import static org.mockito.Mockito.when;
 
 import com.gpumarket.domain.agent.dto.PublicContextDto;
 import com.gpumarket.domain.agent.service.AgentSessionStore.Conditions;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.time.Clock;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.server.ResponseStatusException;
 
 class AgentSessionStoreTest {
   private static final Conditions CONDITIONS =
@@ -31,8 +32,8 @@ class AgentSessionStoreTest {
     when(clock.instant()).thenReturn(start.plusSeconds(1_800));
     assertThatThrownBy(() -> store.require(id))
         .isInstanceOfSatisfying(
-            ResponseStatusException.class,
-            error -> assertThat(error.getStatusCode().value()).isEqualTo(404));
+            GeneralException.class,
+            error -> assertThat(error.getCode()).isEqualTo(ErrorStatus.AGENT_SESSION_NOT_FOUND));
     store.delete(id);
   }
 
@@ -45,7 +46,7 @@ class AgentSessionStoreTest {
 
     assertThatThrownBy(() -> store.complete(id, before))
         .isInstanceOfSatisfying(
-            ResponseStatusException.class,
-            error -> assertThat(error.getStatusCode().value()).isEqualTo(404));
+            GeneralException.class,
+            error -> assertThat(error.getCode()).isEqualTo(ErrorStatus.AGENT_SESSION_NOT_FOUND));
   }
 }
