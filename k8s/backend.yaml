@@ -49,6 +49,13 @@ spec:
                 secretKeyRef:
                   name: rds-credentials
                   key: SPRING_DATASOURCE_PASSWORD
+            # 한국은행 ECOS 금리 API 키 (원가 계산 금리 가정 제안값). Secret이 없으면 금리 제안 없이 뜬다.
+            - name: ECOS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ecos-api
+                  key: ECOS_API_KEY
+                  optional: true
           resources:
             requests:
               cpu: 250m
