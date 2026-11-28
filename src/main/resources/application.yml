@@ -12,6 +12,13 @@ spring:
       ddl-auto: validate
     open-in-view: false
 
+# JSON 응답 압축: 가격 이력처럼 큰 응답(수십 MB)의 전송량을 줄인다. 작은 응답은 압축하지 않는다.
+server:
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2KB
+
 springdoc:
   api-docs:
     enabled: false

@@ -37,7 +37,7 @@ public class MarketHistoryController {
       summary = "GPU 가격 이력 조회",
       description =
           "오퍼별 관측 이력. from 포함, to 미포함입니다. 최대 731일·12,000개 관측을 조회하며 limit과 cursor로 오퍼 단위 페이지를 조회할 수"
-              + " 있습니다.",
+              + " 있습니다. 한 페이지는 관측 12,000개를 넘지 않도록 오퍼 수를 줄여 나눕니다.",
       parameters = {
         @Parameter(
             name = "modelId",
@@ -112,19 +112,32 @@ public class MarketHistoryController {
     } else {
       query.put("afterOfferId", historyCursor(params.get("cursor")));
       query.put("seriesLimit", limit + 1);
+      // 오퍼마다 이 기간의 관측 수를 함께 읽어, 한 페이지가 MAX_POINTS를 넘지 않게 자른다.
+      // (오퍼 수로만 자르면 기간이 길어질수록 '12,000개 초과'로 모든 페이지가 실패한다: 오퍼 50개 × 240일)
       var page =
           jdbc.queryForList(
               """
-              SELECT f.offer_id FROM offer f JOIN product p ON p.product_id = f.product_id
+              SELECT f.offer_id,
+                     (SELECT count(*) FROM price_observation o WHERE o.offer_id = f.offer_id
+                      AND o.collected_at >= :start AND o.collected_at < :end) AS points
+              FROM offer f JOIN product p ON p.product_id = f.product_id
               WHERE p.gpu_model_id = :modelId AND f.offer_id > :afterOfferId
                 AND EXISTS (SELECT 1 FROM price_observation o WHERE o.offer_id = f.offer_id
                             AND o.collected_at >= :start AND o.collected_at < :end)
               ORDER BY f.offer_id LIMIT :seriesLimit
               """,
-              query,
-              Long.class);
-      var offerIds = page.subList(0, Math.min(limit, page.size()));
-      if (page.size() > limit) {
+              query);
+      var offerIds = new ArrayList<Long>();
+      long points = 0;
+      for (var row : page) {
+        long n = ((Number) row.get("points")).longValue();
+        if (offerIds.size() == limit || (!offerIds.isEmpty() && points + n > MAX_POINTS)) {
+          break;
+        }
+        offerIds.add(((Number) row.get("offer_id")).longValue());
+        points += n;
+      }
+      if (page.size() > offerIds.size()) {
         nextCursor = offerIds.get(offerIds.size() - 1).toString();
       }
       query.put("offerIds", offerIds);
