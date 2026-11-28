@@ -9,6 +9,8 @@ import com.gpumarket.domain.market.dto.MarketAvailabilityResponseDto.ProcessingC
 import com.gpumarket.domain.market.repository.MarketAvailabilityRepository;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -24,11 +26,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -188,7 +188,7 @@ public class MarketAvailabilityService {
         throw new InvalidRequestException("가격 확보 상태 커서 또는 조회 조건이 올바르지 않습니다.");
       }
       if (cursor.asOf().isBefore(now.minus(30, ChronoUnit.MINUTES))) {
-        throw new ResponseStatusException(HttpStatus.GONE, "커서가 만료되었습니다. 첫 페이지부터 조회하세요.");
+        throw new GeneralException(ErrorStatus.CURSOR_EXPIRED);
       }
       return cursor;
     }

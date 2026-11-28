@@ -9,6 +9,8 @@ import static org.mockito.Mockito.when;
 import com.gpumarket.domain.exchange.service.ExchangeService;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.domain.market.service.MarketOfferService;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -16,7 +18,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.server.ResponseStatusException;
 
 class ContractComparisonTest {
   private final MarketOfferRepository repository = mock(MarketOfferRepository.class);
@@ -112,8 +113,10 @@ class ContractComparisonTest {
 
     assertThat(service.contracts(20, Map.of()).items()).isEmpty();
     assertThatThrownBy(() -> service.contracts(21, Map.of()))
-        .isInstanceOf(ResponseStatusException.class)
-        .hasMessageContaining("404");
+        .isInstanceOfSatisfying(
+            GeneralException.class,
+            e -> assertThat(e.getCode()).isEqualTo(ErrorStatus.PRODUCT_NOT_FOUND))
+        .hasMessage("해당 상품을 찾을 수 없습니다.");
   }
 
   private static Map<String, Object> offer(long id, String type, String amount) {

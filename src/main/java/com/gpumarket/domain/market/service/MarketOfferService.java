@@ -9,6 +9,8 @@ import com.gpumarket.domain.market.dto.PublicPriceLookupDto;
 import com.gpumarket.domain.market.dto.PublicPriceLookupDto.PublicPriceDto;
 import com.gpumarket.domain.market.repository.MarketOfferRepository;
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
@@ -32,11 +34,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -197,7 +197,7 @@ public class MarketOfferService {
     Instant now = Instant.now();
     var rows = repository.offers(Map.of("offerId", offerId, "asOf", utc(now)));
     if (rows.isEmpty()) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "오퍼가 없습니다.");
+      throw new GeneralException(ErrorStatus.OFFER_NOT_FOUND);
     }
     var row = rows.get(0);
     var rate = rate(currency);
@@ -235,7 +235,7 @@ public class MarketOfferService {
     Instant asOf = Instant.now();
     var rows = repository.offers(Map.of("productId", productId, "asOf", utc(asOf)));
     if (rows.isEmpty() && !repository.productExists(productId)) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "상품이 없습니다.");
+      throw new GeneralException(ErrorStatus.PRODUCT_NOT_FOUND);
     }
 
     var exchangeRate = rate(currency);

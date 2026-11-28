@@ -4,6 +4,7 @@ import com.gpumarket.domain.agent.dto.AgentMessageRequestDto;
 import com.gpumarket.domain.agent.dto.AgentMessageResponseDto;
 import com.gpumarket.domain.agent.service.AgentMessageService;
 import com.gpumarket.global.api.ApiResponse;
+import com.gpumarket.global.api.code.status.ErrorStatus;
 import io.swagger.v3.oas.annotations.Operation;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -41,7 +42,7 @@ public class AgentMessageController {
 
   @ExceptionHandler(AgentMessageService.SensitiveInput.class)
   public ResponseEntity<ApiResponse<Void>> sensitive() {
-    return ResponseEntity.unprocessableEntity()
-        .body(ApiResponse.failure("SENSITIVE_INPUT_BLOCKED", "공개 시장가격 조회에 사용할 조건만 입력해 주세요."));
+    return ResponseEntity.status(ErrorStatus.SENSITIVE_INPUT_BLOCKED.getHttpStatus())
+        .body(ApiResponse.failure(ErrorStatus.SENSITIVE_INPUT_BLOCKED));
   }
 }

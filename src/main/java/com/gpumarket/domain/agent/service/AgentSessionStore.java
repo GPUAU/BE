@@ -2,6 +2,8 @@ package com.gpumarket.domain.agent.service;
 
 import com.gpumarket.domain.agent.dto.PublicContextDto;
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -9,9 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
-import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class AgentSessionStore {
@@ -47,7 +47,7 @@ public class AgentSessionStore {
     Session session = sessions.get(id);
     if (session == null || !session.expiresAt.isAfter(clock.instant())) {
       sessions.remove(id);
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      throw new GeneralException(ErrorStatus.AGENT_SESSION_NOT_FOUND);
     }
     return session;
   }

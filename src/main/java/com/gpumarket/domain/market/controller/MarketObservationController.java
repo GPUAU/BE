@@ -3,6 +3,8 @@ package com.gpumarket.domain.market.controller;
 import com.gpumarket.domain.market.repository.MarketRepository;
 import com.gpumarket.global.api.ApiResponse;
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import java.sql.Timestamp;
@@ -12,12 +14,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 public class MarketObservationController {
@@ -38,7 +38,7 @@ public class MarketObservationController {
       @RequestParam(defaultValue = "USD") String currency) {
     if (!currency.equals("USD")) throw new InvalidRequestException("현재 USD만 지원합니다.");
     var rows = repository.observation(observationId);
-    if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "관측이 없습니다.");
+    if (rows.isEmpty()) throw new GeneralException(ErrorStatus.OBSERVATION_NOT_FOUND);
     var row = rows.get(0);
     var normalizations = repository.normalizations(observationId);
     Map<String, Object> selected = null;

@@ -45,7 +45,8 @@ class AgentMessageApiTest {
 
     mvc.perform(followUp(first))
         .andExpect(status().isNotFound())
-        .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+        .andExpect(jsonPath("$.code").value("AGENT4041"))
+        .andExpect(jsonPath("$.message").value("대화 세션이 없거나 만료되었습니다. 새로 시작해 주세요."));
     mvc.perform(followUp(second))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.result.sessionId").value(second));

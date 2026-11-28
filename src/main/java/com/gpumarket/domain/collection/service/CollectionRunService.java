@@ -7,6 +7,8 @@ import com.gpumarket.domain.collection.repository.CollectionRunRepository;
 import com.gpumarket.domain.collection.repository.CollectionRunRepository.Run;
 import com.gpumarket.domain.collection.repository.CollectionRunRepository.Target;
 import com.gpumarket.global.api.InvalidRequestException;
+import com.gpumarket.global.api.code.status.ErrorStatus;
+import com.gpumarket.global.api.exception.GeneralException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -17,11 +19,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class CollectionRunService {
@@ -112,7 +112,7 @@ public class CollectionRunService {
         throw new InvalidRequestException("수집 실행 이력 커서 또는 조회 조건이 올바르지 않습니다.");
       }
       if (cursor.asOf().isBefore(now.minus(30, ChronoUnit.MINUTES))) {
-        throw new ResponseStatusException(HttpStatus.GONE, "커서가 만료되었습니다. 첫 페이지부터 조회하세요.");
+        throw new GeneralException(ErrorStatus.CURSOR_EXPIRED);
       }
       return cursor;
     }
